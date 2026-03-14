@@ -1,10 +1,38 @@
-import { Resend } from "resend";
+import { google } from "googleapis";
 
-const FROM = process.env.EMAIL_FROM || "noreply@lexailabs.com";
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
+const EMAIL_FROM = process.env.EMAIL_FROM || "noreply@lexailabs.com";
 const isDev = process.env.NODE_ENV !== "production";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+const oauth2Client = new google.auth.OAuth2(
+  process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_CLIENT_SECRET,
+  "https://developers.google.com/oauthplayground"
+);
+
+oauth2Client.setCredentials({
+  refresh_token: process.env.GMAIL_REFRESH_TOKEN,
+});
+
+const gmail = google.gmail({ version: "v1", auth: oauth2Client });
+
+function buildRawEmail(to: string, subject: string, html: string): string {
+  const message = [
+    `From: Lex AI <${EMAIL_FROM}>`,
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    `MIME-Version: 1.0`,
+    `Content-Type: text/html; charset=UTF-8`,
+    "",
+    html,
+  ].join("\r\n");
+
+  return Buffer.from(message)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
 
 async function sendEmail(to: string, subject: string, html: string) {
   if (isDev) {
@@ -12,7 +40,12 @@ async function sendEmail(to: string, subject: string, html: string) {
     console.log(`[EMAIL] Body: ${html.substring(0, 200)}...`);
     return;
   }
-  await resend.emails.send({ from: FROM, to, subject, html });
+
+  const raw = buildRawEmail(to, subject, html);
+  await gmail.users.messages.send({
+    userId: "me",
+    requestBody: { raw },
+  });
 }
 
 export async function sendVerificationEmail(email: string, token: string) {
@@ -20,9 +53,9 @@ export async function sendVerificationEmail(email: string, token: string) {
 
   await sendEmail(
     email,
-    "Verify your email - LexAI LMS",
+    "Verify your email - Lex AI",
     `
-      <h2>Welcome to LexAI LMS</h2>
+      <h2>Welcome to Lex AI</h2>
       <p>Click the link below to verify your email address:</p>
       <a href="${verifyUrl}">Verify Email</a>
       <p>This link expires in 24 hours.</p>
@@ -36,7 +69,7 @@ export async function sendPasswordResetEmail(email: string, token: string) {
 
   await sendEmail(
     email,
-    "Reset your password - LexAI LMS",
+    "Reset your password - Lex AI",
     `
       <h2>Password Reset</h2>
       <p>Click the link below to reset your password:</p>

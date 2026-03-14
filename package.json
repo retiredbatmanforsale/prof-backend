@@ -21,8 +21,8 @@
     "fastify": "^5.2.1",
     "fastify-plugin": "^5.1.0",
     "google-auth-library": "^9.14.1",
+    "googleapis": "^171.4.0",
     "razorpay": "^2.9.6",
-    "resend": "^4.1.2",
     "zod": "^3.24.1"
   },
   "devDependencies": {
