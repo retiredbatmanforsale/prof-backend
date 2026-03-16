@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { forgotPasswordSchema } from "../../schemas/auth.js";
 import { generateToken, hashToken } from "../../lib/tokens.js";
-import { sendPasswordResetEmail } from "../../lib/email.js";
+import { sendPasswordResetEmail, sendNoPasswordEmail } from "../../lib/email.js";
 
 export default async function forgotPasswordRoute(app: FastifyInstance) {
   app.post(
@@ -30,7 +30,17 @@ export default async function forgotPasswordRoute(app: FastifyInstance) {
         where: { email: parsed.data.email.toLowerCase() },
       });
 
-      if (!user || !user.hashedPassword) {
+      if (!user) {
+        return reply.send(successResponse);
+      }
+
+      if (!user.hashedPassword) {
+        // User signed up via Google OAuth — no password to reset
+        try {
+          await sendNoPasswordEmail(user.email);
+        } catch (err) {
+          app.log.error(err, "Failed to send no-password email");
+        }
         return reply.send(successResponse);
       }
 

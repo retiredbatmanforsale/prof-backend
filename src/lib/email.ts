@@ -1,4 +1,5 @@
 import { google } from "googleapis";
+import { randomUUID } from "crypto";
 
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 const EMAIL_FROM = process.env.EMAIL_FROM || "help@lexailabs.com";
@@ -17,7 +18,10 @@ oauth2Client.setCredentials({
 const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
 function buildRawEmail(to: string, subject: string, html: string): string {
+  const messageId = `<${randomUUID()}@lexailabs.com>`;
   const message = [
+    `Message-ID: ${messageId}`,
+    `Date: ${new Date().toUTCString()}`,
     `From: Lex AI <${EMAIL_FROM}>`,
     `To: ${to}`,
     `Subject: ${subject}`,
@@ -34,6 +38,36 @@ function buildRawEmail(to: string, subject: string, html: string): string {
     .replace(/=+$/, "");
 }
 
+function wrapHtml(content: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lex AI</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f5;padding:40px 20px;">
+    <tr>
+      <td align="center">
+        <table width="480" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:8px;overflow:hidden;">
+          <tr>
+            <td style="padding:32px 40px;">
+              ${content}
+              <p style="margin-top:32px;font-size:13px;color:#71717a;line-height:1.5;">
+                — The Lex AI Team<br>
+                <a href="https://learn.lexailabs.com" style="color:#71717a;">learn.lexailabs.com</a>
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+}
+
 async function sendEmail(to: string, subject: string, html: string) {
   if (isDev) {
     console.log(`[EMAIL] Would send to ${to}: ${subject}`);
@@ -43,11 +77,11 @@ async function sendEmail(to: string, subject: string, html: string) {
 
   const raw = buildRawEmail(to, subject, html);
   try {
-    await gmail.users.messages.send({
+    const res = await gmail.users.messages.send({
       userId: "me",
       requestBody: { raw },
     });
-    console.log(`[EMAIL] Sent to ${to}: ${subject}`);
+    console.log(`[EMAIL] Sent to ${to}: ${subject} (id: ${res.data.id})`);
   } catch (err: any) {
     console.error(`[EMAIL] Failed to send to ${to}: ${subject}`, {
       status: err?.code || err?.response?.status,
@@ -61,31 +95,52 @@ async function sendEmail(to: string, subject: string, html: string) {
 export async function sendVerificationEmail(email: string, token: string) {
   const verifyUrl = `${process.env.BACKEND_URL || "http://localhost:4000"}/auth/verify-email?token=${token}`;
 
-  await sendEmail(
-    email,
-    "Verify your email - Lex AI",
-    `
-      <h2>Welcome to Lex AI</h2>
-      <p>Click the link below to verify your email address:</p>
-      <a href="${verifyUrl}">Verify Email</a>
-      <p>This link expires in 24 hours.</p>
-      <p>If you didn't create an account, you can ignore this email.</p>
-    `
-  );
+  const content = `
+    <h2 style="margin:0 0 16px;font-size:22px;color:#18181b;">Welcome to Lex AI</h2>
+    <p style="margin:0 0 24px;font-size:15px;color:#3f3f46;line-height:1.6;">
+      Click the button below to verify your email address and activate your account.
+    </p>
+    <a href="${verifyUrl}" style="display:inline-block;padding:12px 32px;background-color:#2563eb;color:#ffffff;text-decoration:none;border-radius:6px;font-size:15px;font-weight:500;">
+      Verify Email Address
+    </a>
+    <p style="margin:24px 0 0;font-size:13px;color:#71717a;line-height:1.5;">
+      This link expires in 24 hours. If you didn't create an account, you can safely ignore this email.
+    </p>`;
+
+  await sendEmail(email, "Verify your email — Lex AI", wrapHtml(content));
 }
 
 export async function sendPasswordResetEmail(email: string, token: string) {
   const resetUrl = `${FRONTEND_URL}/reset-password?token=${token}`;
 
-  await sendEmail(
-    email,
-    "Reset your password - Lex AI",
-    `
-      <h2>Password Reset</h2>
-      <p>Click the link below to reset your password:</p>
-      <a href="${resetUrl}">Reset Password</a>
-      <p>This link expires in 1 hour.</p>
-      <p>If you didn't request a password reset, you can ignore this email.</p>
-    `
-  );
+  const content = `
+    <h2 style="margin:0 0 16px;font-size:22px;color:#18181b;">Password Reset Request</h2>
+    <p style="margin:0 0 24px;font-size:15px;color:#3f3f46;line-height:1.6;">
+      We received a request to reset your password. Click the button below to choose a new one.
+    </p>
+    <a href="${resetUrl}" style="display:inline-block;padding:12px 32px;background-color:#2563eb;color:#ffffff;text-decoration:none;border-radius:6px;font-size:15px;font-weight:500;">
+      Reset Password
+    </a>
+    <p style="margin:24px 0 0;font-size:13px;color:#71717a;line-height:1.5;">
+      This link expires in 1 hour. If you didn't request a password reset, you can safely ignore this email.
+    </p>`;
+
+  await sendEmail(email, "Reset your password — Lex AI", wrapHtml(content));
+}
+
+export async function sendNoPasswordEmail(email: string) {
+  const content = `
+    <h2 style="margin:0 0 16px;font-size:22px;color:#18181b;">Password Reset Request</h2>
+    <p style="margin:0 0 24px;font-size:15px;color:#3f3f46;line-height:1.6;">
+      We received a request to reset your password, but your account uses Google Sign-In
+      and doesn't have a password set.
+    </p>
+    <p style="margin:0 0 24px;font-size:15px;color:#3f3f46;line-height:1.6;">
+      Please sign in using the "Continue with Google" button on the login page.
+    </p>
+    <a href="${FRONTEND_URL}/login" style="display:inline-block;padding:12px 32px;background-color:#2563eb;color:#ffffff;text-decoration:none;border-radius:6px;font-size:15px;font-weight:500;">
+      Go to Login
+    </a>`;
+
+  await sendEmail(email, "Your account uses Google Sign-In — Lex AI", wrapHtml(content));
 }
