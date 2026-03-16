@@ -55,7 +55,7 @@ function wrapHtml(content: string): string {
             <td style="padding:32px 40px;">
               ${content}
               <p style="margin-top:32px;font-size:13px;color:#71717a;line-height:1.5;">
-                — The Lex AI Team<br>
+                &mdash; The Lex AI Team<br>
                 <a href="https://learn.lexailabs.com" style="color:#71717a;">learn.lexailabs.com</a>
               </p>
             </td>
@@ -107,7 +107,7 @@ export async function sendVerificationEmail(email: string, token: string) {
       This link expires in 24 hours. If you didn't create an account, you can safely ignore this email.
     </p>`;
 
-  await sendEmail(email, "Verify your email — Lex AI", wrapHtml(content));
+  await sendEmail(email, "Verify your email - Lex AI", wrapHtml(content));
 }
 
 export async function sendPasswordResetEmail(email: string, token: string) {
@@ -125,7 +125,7 @@ export async function sendPasswordResetEmail(email: string, token: string) {
       This link expires in 1 hour. If you didn't request a password reset, you can safely ignore this email.
     </p>`;
 
-  await sendEmail(email, "Reset your password — Lex AI", wrapHtml(content));
+  await sendEmail(email, "Reset your password - Lex AI", wrapHtml(content));
 }
 
 export async function sendNoPasswordEmail(email: string) {
@@ -142,5 +142,5 @@ export async function sendNoPasswordEmail(email: string) {
       Go to Login
     </a>`;
 
-  await sendEmail(email, "Your account uses Google Sign-In — Lex AI", wrapHtml(content));
+  await sendEmail(email, "Your account uses Google Sign-In - Lex AI", wrapHtml(content));
 }
