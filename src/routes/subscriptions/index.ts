@@ -1,20 +1,37 @@
 import type { FastifyInstance } from "fastify";
 import type { PlanType } from "@prisma/client";
 import { authenticate } from "../../hooks/auth.js";
-import { getPlanConfig } from "../../lib/plans.js";
+import { getPlanConfig, getAllPlanConfigs } from "../../lib/plans.js";
 import {
   createSubscription,
   cancelSubscription,
   verifySubscriptionSignature,
 } from "../../lib/razorpay.js";
 
+function formatPrice(paise: number): string {
+  const rupees = paise / 100;
+  return "\u20B9" + rupees.toLocaleString("en-IN");
+}
+
 export default async function subscriptionRoutes(app: FastifyInstance) {
-  app.addHook("preHandler", authenticate);
+  // GET /subscriptions/plans — public, no auth
+  app.get("/plans", async (_request, reply) => {
+    const configs = getAllPlanConfigs();
+    const plans = configs.map((c) => ({
+      planType: c.planType,
+      label: c.label,
+      price: c.price,
+      priceDisplay: formatPrice(c.price),
+      interval: c.interval,
+    }));
+    return reply.send({ plans });
+  });
 
   // POST /subscriptions/create
   app.post(
     "/create",
     {
+      preHandler: [authenticate],
       config: {
         rateLimit: { max: 5, timeWindow: "1 minute" },
       },
@@ -100,6 +117,7 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
   app.post(
     "/verify",
     {
+      preHandler: [authenticate],
       config: {
         rateLimit: { max: 5, timeWindow: "1 minute" },
       },
@@ -176,7 +194,7 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
   );
 
   // GET /subscriptions/status
-  app.get("/status", async (request, reply) => {
+  app.get("/status", { preHandler: [authenticate] }, async (request, reply) => {
     const userId = request.currentUser!.userId;
 
     const subscription = await app.prisma.subscription.findFirst({
@@ -212,6 +230,7 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
   app.post(
     "/cancel",
     {
+      preHandler: [authenticate],
       config: {
         rateLimit: { max: 3, timeWindow: "1 minute" },
       },
