@@ -73,11 +73,28 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
           .send({ error: "You already have access through your institution." });
       }
 
+      // Cancel any stale CREATED subscriptions (user opened popup but never paid)
+      const staleSubs = await app.prisma.subscription.findMany({
+        where: { userId, status: "CREATED" },
+      });
+
+      for (const stale of staleSubs) {
+        try {
+          await cancelSubscription(stale.razorpaySubscriptionId, false);
+        } catch {
+          // Razorpay may have already cancelled it
+        }
+        await app.prisma.subscription.update({
+          where: { id: stale.id },
+          data: { status: "CANCELLED", cancelledAt: new Date() },
+        });
+      }
+
       // Check for existing active/pending subscription
       const existingSub = await app.prisma.subscription.findFirst({
         where: {
           userId,
-          status: { in: ["CREATED", "AUTHENTICATED", "ACTIVE", "PENDING"] },
+          status: { in: ["AUTHENTICATED", "ACTIVE", "PENDING"] },
         },
       });
 
@@ -225,6 +242,47 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
       },
     });
   });
+
+  // POST /subscriptions/cancel-created — cleanup when user dismisses Razorpay popup
+  app.post(
+    "/cancel-created",
+    {
+      preHandler: [authenticate],
+    },
+    async (request, reply) => {
+      const userId = request.currentUser!.userId;
+      const { subscriptionId } = request.body as { subscriptionId: string };
+
+      if (!subscriptionId) {
+        return reply.status(400).send({ error: "Missing subscriptionId." });
+      }
+
+      const subscription = await app.prisma.subscription.findUnique({
+        where: { razorpaySubscriptionId: subscriptionId },
+      });
+
+      if (!subscription || subscription.userId !== userId) {
+        return reply.status(404).send({ error: "Subscription not found." });
+      }
+
+      if (subscription.status !== "CREATED") {
+        return reply.send({ success: true, message: "Subscription is no longer in created state." });
+      }
+
+      try {
+        await cancelSubscription(subscriptionId, false);
+      } catch {
+        // Razorpay may have already cancelled it
+      }
+
+      await app.prisma.subscription.update({
+        where: { id: subscription.id },
+        data: { status: "CANCELLED", cancelledAt: new Date() },
+      });
+
+      return reply.send({ success: true });
+    }
+  );
 
   // POST /subscriptions/cancel
   app.post(
