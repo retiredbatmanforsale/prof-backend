@@ -15,7 +15,11 @@ function formatPrice(paise: number): string {
 
 export default async function subscriptionRoutes(app: FastifyInstance) {
   // GET /subscriptions/plans — public, no auth
-  app.get("/plans", async (_request, reply) => {
+  app.get("/plans", {
+    config: {
+      rateLimit: { max: 30, timeWindow: "1 minute" },
+    },
+  }, async (_request, reply) => {
     const configs = getAllPlanConfigs();
     const plans = configs.map((c) => ({
       planType: c.planType,
@@ -211,7 +215,12 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
   );
 
   // GET /subscriptions/status
-  app.get("/status", { preHandler: [authenticate] }, async (request, reply) => {
+  app.get("/status", {
+    preHandler: [authenticate],
+    config: {
+      rateLimit: { max: 30, timeWindow: "1 minute" },
+    },
+  }, async (request, reply) => {
     const userId = request.currentUser!.userId;
 
     const subscription = await app.prisma.subscription.findFirst({
@@ -248,6 +257,9 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
     "/cancel-created",
     {
       preHandler: [authenticate],
+      config: {
+        rateLimit: { max: 5, timeWindow: "1 minute" },
+      },
     },
     async (request, reply) => {
       const userId = request.currentUser!.userId;

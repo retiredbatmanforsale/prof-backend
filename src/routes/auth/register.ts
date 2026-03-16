@@ -28,8 +28,11 @@ export default async function registerRoute(app: FastifyInstance) {
       });
 
       if (existing) {
-        return reply.status(409).send({
-          error: "An account with this email already exists",
+        // Don't reveal that the account exists — return same success response
+        return reply.status(201).send({
+          success: true,
+          message:
+            "Account created. Please check your email to verify your account.",
         });
       }
 

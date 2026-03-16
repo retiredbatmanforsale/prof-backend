@@ -132,7 +132,11 @@ export default async function paymentRoutes(app: FastifyInstance) {
   );
 
   // GET /payments/status
-  app.get("/status", async (request, reply) => {
+  app.get("/status", {
+    config: {
+      rateLimit: { max: 30, timeWindow: "1 minute" },
+    },
+  }, async (request, reply) => {
     const userId = request.currentUser!.userId;
 
     const user = await app.prisma.user.findUnique({

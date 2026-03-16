@@ -31,14 +31,13 @@ export default async function loginRoute(app: FastifyInstance) {
         if (!user) {
           const preloaded = await app.prisma.preloadedStudent.findFirst({
             where: { email: email.toLowerCase(), claimed: false },
-            include: { organization: { select: { name: true, isActive: true } } },
+            include: { organization: { select: { isActive: true } } },
           });
 
           if (preloaded && preloaded.organization.isActive) {
             return reply.status(401).send({
-              error: `Your institution (${preloaded.organization.name}) has pre-approved your access. Create an account to get started.`,
+              error: "Your institution has pre-approved your access. Create an account to get started.",
               code: "B2B_PREAPPROVED",
-              organizationName: preloaded.organization.name,
             });
           }
         }

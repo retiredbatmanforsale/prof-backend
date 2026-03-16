@@ -8,6 +8,9 @@ export default async function logoutRoute(app: FastifyInstance) {
     "/logout",
     {
       preHandler: [authenticate],
+      config: {
+        rateLimit: { max: 10, timeWindow: "1 minute" },
+      },
     },
     async (request, reply) => {
       const parsed = logoutSchema.safeParse(request.body);
@@ -28,6 +31,9 @@ export default async function logoutRoute(app: FastifyInstance) {
     "/logout-all",
     {
       preHandler: [authenticate],
+      config: {
+        rateLimit: { max: 5, timeWindow: "1 minute" },
+      },
     },
     async (request, reply) => {
       await revokeAllUserTokens(app.prisma, request.currentUser!.userId);

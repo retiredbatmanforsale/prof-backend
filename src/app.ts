@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import helmetPlugin from "@fastify/helmet";
 import corsPlugin from "./plugins/cors.js";
 import jwtPlugin from "./plugins/jwt.js";
 import prismaPlugin from "./plugins/prisma.js";
@@ -17,6 +18,9 @@ export async function buildApp() {
   });
 
   // Register plugins
+  await app.register(helmetPlugin, {
+    contentSecurityPolicy: false, // API doesn't serve HTML
+  });
   await app.register(corsPlugin);
   await app.register(rateLimitPlugin);
   await app.register(jwtPlugin);

@@ -4,7 +4,11 @@ import { hashToken } from "../../lib/tokens.js";
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 
 export default async function verifyEmailRoute(app: FastifyInstance) {
-  app.get("/verify-email", async (request, reply) => {
+  app.get("/verify-email", {
+    config: {
+      rateLimit: { max: 10, timeWindow: "1 minute" },
+    },
+  }, async (request, reply) => {
     const { token } = request.query as { token?: string };
 
     if (!token) {

@@ -7,6 +7,9 @@ export default async function meRoute(app: FastifyInstance) {
     "/me",
     {
       preHandler: [authenticate],
+      config: {
+        rateLimit: { max: 30, timeWindow: "1 minute" },
+      },
     },
     async (request, reply) => {
       const user = await app.prisma.user.findUnique({
