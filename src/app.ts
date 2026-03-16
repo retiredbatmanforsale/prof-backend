@@ -5,6 +5,7 @@ import prismaPlugin from "./plugins/prisma.js";
 import rateLimitPlugin from "./plugins/rate-limit.js";
 import authRoutes from "./routes/auth/index.js";
 import paymentRoutes from "./routes/payments/index.js";
+import subscriptionRoutes from "./routes/subscriptions/index.js";
 import razorpayWebhookRoute from "./routes/webhooks/razorpay.js";
 
 export async function buildApp() {
@@ -37,6 +38,7 @@ export async function buildApp() {
   // Register routes
   await app.register(authRoutes, { prefix: "/auth" });
   await app.register(paymentRoutes, { prefix: "/payments" });
+  await app.register(subscriptionRoutes, { prefix: "/subscriptions" });
   await app.register(razorpayWebhookRoute, { prefix: "/webhooks" });
 
   return app;

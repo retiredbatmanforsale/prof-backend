@@ -12,6 +12,24 @@ enum Role {
   USER
 }
 
+enum PlanType {
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
+enum SubscriptionStatus {
+  CREATED
+  AUTHENTICATED
+  ACTIVE
+  PENDING
+  HALTED
+  CANCELLED
+  COMPLETED
+  EXPIRED
+  PAUSED
+}
+
 // ─── Core Tables ──────────────────────────────────────────────
 
 model User {
@@ -31,6 +49,7 @@ model User {
   refreshTokens           RefreshToken[]
   organizationMembers     OrganizationMember[]
   payments                Payment[]
+  subscriptions           Subscription[]
   passwordResetTokens     PasswordResetToken[]
   claimedPreloadedRecords PreloadedStudent[] @relation("ClaimedBy")
 
@@ -130,6 +149,30 @@ model Payment {
 
   @@index([userId])
   @@map("payments")
+}
+
+// ─── Subscription Tables ─────────────────────────────────────
+
+model Subscription {
+  id                     String             @id @default(cuid())
+  userId                 String
+  razorpaySubscriptionId String             @unique
+  razorpayPlanId         String
+  planType               PlanType
+  status                 SubscriptionStatus @default(CREATED)
+  currentPeriodStart     DateTime?
+  currentPeriodEnd       DateTime?
+  cancelledAt            DateTime?
+  endedAt                DateTime?
+  shortUrl               String?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@map("subscriptions")
 }
 
 // ─── Auth Support Tables ──────────────────────────────────────

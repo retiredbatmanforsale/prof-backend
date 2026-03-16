@@ -57,6 +57,42 @@ export function verifyPaymentSignature(
   );
 }
 
+export async function createSubscription(
+  planId: string,
+  totalCount: number,
+  notes?: Record<string, string>
+) {
+  return getRazorpay().subscriptions.create({
+    plan_id: planId,
+    total_count: totalCount,
+    quantity: 1,
+    notes,
+  });
+}
+
+export async function fetchSubscription(subscriptionId: string) {
+  return getRazorpay().subscriptions.fetch(subscriptionId);
+}
+
+export async function cancelSubscription(
+  subscriptionId: string,
+  cancelAtCycleEnd: boolean = true
+) {
+  return getRazorpay().subscriptions.cancel(subscriptionId, cancelAtCycleEnd);
+}
+
+export function verifySubscriptionSignature(
+  subscriptionId: string,
+  paymentId: string,
+  signature: string
+): boolean {
+  return validatePaymentVerification(
+    { subscription_id: subscriptionId, payment_id: paymentId },
+    signature,
+    getKeySecret()
+  );
+}
+
 export function verifyWebhookSignatureFn(
   body: string,
   signature: string,

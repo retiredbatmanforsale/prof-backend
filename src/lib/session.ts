@@ -11,7 +11,7 @@ export async function getAccessInfo(
   userId: string
 ): Promise<{
   hasAccess: boolean;
-  accessType: "premium" | "institution" | null;
+  accessType: "premium" | "subscription" | "institution" | null;
   organizationName: string | null;
 }> {
   const user = await prisma.user.findUnique({
@@ -20,7 +20,39 @@ export async function getAccessInfo(
   });
 
   if (user?.isPremium) {
-    return { hasAccess: true, accessType: "premium", organizationName: null };
+    // Check if user has an active subscription
+    const activeSubscription = await prisma.subscription.findFirst({
+      where: {
+        userId,
+        status: { in: ["ACTIVE", "AUTHENTICATED", "PENDING"] },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (activeSubscription) {
+      // Has an active subscription — check if within billing period
+      if (
+        activeSubscription.currentPeriodEnd &&
+        activeSubscription.currentPeriodEnd < new Date()
+      ) {
+        // Period expired (webhook missed) — check for legacy one-time payments before revoking
+        const hasLegacyPayment = await hasLegacyOneTimePayment(prisma, userId);
+        if (hasLegacyPayment) {
+          return { hasAccess: true, accessType: "premium", organizationName: null };
+        }
+        // No legacy payment — revoke access
+        await prisma.user.update({
+          where: { id: userId },
+          data: { isPremium: false },
+        });
+        // Fall through to institution check
+      } else {
+        return { hasAccess: true, accessType: "subscription", organizationName: null };
+      }
+    } else {
+      // isPremium but no active subscription — legacy one-time premium user
+      return { hasAccess: true, accessType: "premium", organizationName: null };
+    }
   }
 
   const membership = await prisma.organizationMember.findFirst({
@@ -44,6 +76,19 @@ export async function getAccessInfo(
   }
 
   return { hasAccess: false, accessType: null, organizationName: null };
+}
+
+async function hasLegacyOneTimePayment(
+  prisma: PrismaClient,
+  userId: string
+): Promise<boolean> {
+  const payment = await prisma.payment.findFirst({
+    where: {
+      userId,
+      status: "paid",
+    },
+  });
+  return !!payment;
 }
 
 export async function issueTokens(

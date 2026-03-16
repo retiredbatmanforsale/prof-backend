@@ -5,7 +5,7 @@ export interface JWTPayload {
   email: string;
   role: Role;
   hasAccess: boolean;
-  accessType: "premium" | "institution" | null;
+  accessType: "premium" | "subscription" | "institution" | null;
   organizationName: string | null;
 }
 
