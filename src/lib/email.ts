@@ -2,7 +2,7 @@ import { google } from "googleapis";
 
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 const EMAIL_FROM = process.env.EMAIL_FROM || "noreply@lexailabs.com";
-const isDev = process.env.NODE_ENV !== "production";
+const isDev = process.env.NODE_ENV === "development";
 
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
@@ -42,10 +42,20 @@ async function sendEmail(to: string, subject: string, html: string) {
   }
 
   const raw = buildRawEmail(to, subject, html);
-  await gmail.users.messages.send({
-    userId: "me",
-    requestBody: { raw },
-  });
+  try {
+    await gmail.users.messages.send({
+      userId: "me",
+      requestBody: { raw },
+    });
+    console.log(`[EMAIL] Sent to ${to}: ${subject}`);
+  } catch (err: any) {
+    console.error(`[EMAIL] Failed to send to ${to}: ${subject}`, {
+      status: err?.code || err?.response?.status,
+      message: err?.message,
+      errors: err?.errors,
+    });
+    throw err;
+  }
 }
 
 export async function sendVerificationEmail(email: string, token: string) {
