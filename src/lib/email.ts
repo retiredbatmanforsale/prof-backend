@@ -1,7 +1,7 @@
 import { google } from "googleapis";
 
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
-const EMAIL_FROM = process.env.EMAIL_FROM || "noreply@lexailabs.com";
+const EMAIL_FROM = process.env.EMAIL_FROM || "help@lexailabs.com";
 const isDev = process.env.NODE_ENV === "development";
 
 const oauth2Client = new google.auth.OAuth2(
