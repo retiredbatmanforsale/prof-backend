@@ -150,7 +150,7 @@ export async function sendInvitationEmail(
 
   await sendEmail(
     email,
-    `You're invited to Lex AI — ${organizationName}`,
+    `You're invited to Lex AI - ${organizationName}`,
     wrapHtml(content)
   );
 }
