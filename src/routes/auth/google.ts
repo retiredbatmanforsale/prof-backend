@@ -60,6 +60,25 @@ export default async function googleAuthRoute(app: FastifyInstance) {
           });
         }
       } else {
+        // Check if this email has a pending B2B invitation
+        const pendingInvite = await app.prisma.preloadedStudent.findFirst({
+          where: {
+            email: googleUser.email.toLowerCase(),
+            claimed: false,
+            organization: { isActive: true },
+          },
+          include: { organization: { select: { name: true } } },
+        });
+
+        if (pendingInvite) {
+          return reply.status(403).send({
+            error:
+              "Your institution has invited you. Please accept the invitation from your email.",
+            code: "B2B_PENDING_INVITE",
+            organizationName: pendingInvite.organization.name,
+          });
+        }
+
         // Create new user
         user = await app.prisma.user.create({
           data: {

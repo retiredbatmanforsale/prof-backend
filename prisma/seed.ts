@@ -68,6 +68,9 @@ async function main() {
   console.log(`[User] Created unverified user: ${unverifiedUser.email} (emailVerified: null)`);
 
   // ─── 5. Create a B2B Organization ───
+  const threeMonthsFromNow = new Date();
+  threeMonthsFromNow.setMonth(threeMonthsFromNow.getMonth() + 3);
+
   const org = await prisma.organization.upsert({
     where: { slug: "acme-university" },
     update: {},
@@ -76,20 +79,22 @@ async function main() {
       slug: "acme-university",
       emailDomains: ["acme.edu", "acmeuniversity.edu"],
       isActive: true,
+      accessStartDate: new Date(),
+      accessEndDate: threeMonthsFromNow,
     },
   });
   console.log(`[Org] Created organization: ${org.name} (domains: ${org.emailDomains.join(", ")})`);
 
   // ─── 6. Pre-load student emails for B2B flow ───
-  const preloadedEmails = [
-    "alice@acme.edu",
-    "bob@acme.edu",
-    "charlie@acme.edu",
-    "student1@acmeuniversity.edu",
-    "student2@acmeuniversity.edu",
+  const preloadedStudents = [
+    { email: "alice@acme.edu", name: "Alice Johnson" },
+    { email: "bob@acme.edu", name: "Bob Smith" },
+    { email: "charlie@acme.edu", name: "Charlie Brown" },
+    { email: "student1@acmeuniversity.edu", name: null },
+    { email: "student2@acmeuniversity.edu", name: null },
   ];
 
-  for (const email of preloadedEmails) {
+  for (const { email, name } of preloadedStudents) {
     await prisma.preloadedStudent.upsert({
       where: {
         organizationId_email: {
@@ -100,12 +105,13 @@ async function main() {
       update: {},
       create: {
         email,
+        name,
         organizationId: org.id,
         claimed: false,
       },
     });
   }
-  console.log(`[B2B] Pre-loaded ${preloadedEmails.length} student emails for ${org.name}`);
+  console.log(`[B2B] Pre-loaded ${preloadedStudents.length} student emails for ${org.name}`);
 
   // ─── 7. Create a B2B user who already has institutional access ───
   const b2bUser = await prisma.user.upsert({

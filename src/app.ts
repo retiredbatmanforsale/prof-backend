@@ -4,7 +4,9 @@ import corsPlugin from "./plugins/cors.js";
 import jwtPlugin from "./plugins/jwt.js";
 import prismaPlugin from "./plugins/prisma.js";
 import rateLimitPlugin from "./plugins/rate-limit.js";
+import multipartPlugin from "./plugins/multipart.js";
 import authRoutes from "./routes/auth/index.js";
+import adminRoutes from "./routes/admin/index.js";
 import paymentRoutes from "./routes/payments/index.js";
 import subscriptionRoutes from "./routes/subscriptions/index.js";
 import razorpayWebhookRoute from "./routes/webhooks/razorpay.js";
@@ -25,6 +27,7 @@ export async function buildApp() {
   await app.register(rateLimitPlugin);
   await app.register(jwtPlugin);
   await app.register(prismaPlugin);
+  await app.register(multipartPlugin);
 
   // Health check
   app.get("/health", async () => ({ status: "ok" }));
@@ -85,6 +88,7 @@ export async function buildApp() {
 
   // Register routes
   await app.register(authRoutes, { prefix: "/auth" });
+  await app.register(adminRoutes, { prefix: "/admin" });
   await app.register(paymentRoutes, { prefix: "/payments" });
   await app.register(subscriptionRoutes, { prefix: "/subscriptions" });
   await app.register(razorpayWebhookRoute, { prefix: "/webhooks" });

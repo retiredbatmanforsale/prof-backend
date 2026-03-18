@@ -85,13 +85,15 @@ model RefreshToken {
 // ─── Institutional Tables ─────────────────────────────────────
 
 model Organization {
-  id           String   @id @default(cuid())
-  name         String
-  slug         String   @unique
-  emailDomains String[]
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id              String    @id @default(cuid())
+  name            String
+  slug            String    @unique
+  emailDomains    String[]
+  isActive        Boolean   @default(true)
+  accessStartDate DateTime?
+  accessEndDate   DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   members           OrganizationMember[]
   preloadedStudents PreloadedStudent[]
@@ -118,17 +120,32 @@ model OrganizationMember {
 model PreloadedStudent {
   id              String   @id @default(cuid())
   email           String
+  name            String?
   organizationId  String
   claimed         Boolean  @default(false)
   claimedByUserId String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  claimedBy    User?        @relation("ClaimedBy", fields: [claimedByUserId], references: [id])
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  claimedBy        User?             @relation("ClaimedBy", fields: [claimedByUserId], references: [id])
+  invitationTokens InvitationToken[]
 
   @@unique([organizationId, email])
   @@map("preloaded_students")
+}
+
+model InvitationToken {
+  id                 String   @id @default(cuid())
+  token              String   @unique
+  preloadedStudentId String
+  expiresAt          DateTime
+  used               Boolean  @default(false)
+  createdAt          DateTime @default(now())
+
+  preloadedStudent PreloadedStudent @relation(fields: [preloadedStudentId], references: [id], onDelete: Cascade)
+
+  @@map("invitation_tokens")
 }
 
 // ─── Payment Tables ──────────────────────────────────────────

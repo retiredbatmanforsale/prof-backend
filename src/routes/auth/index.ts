@@ -8,6 +8,7 @@ import meRoute from "./me.js";
 import verifyEmailRoute from "./verify-email.js";
 import forgotPasswordRoute from "./forgot-password.js";
 import resetPasswordRoute from "./reset-password.js";
+import acceptInviteRoute from "./accept-invite.js";
 
 export default async function authRoutes(app: FastifyInstance) {
   await app.register(googleAuthRoute);
@@ -19,4 +20,5 @@ export default async function authRoutes(app: FastifyInstance) {
   await app.register(verifyEmailRoute);
   await app.register(forgotPasswordRoute);
   await app.register(resetPasswordRoute);
+  await app.register(acceptInviteRoute);
 }

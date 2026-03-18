@@ -128,6 +128,33 @@ export async function sendPasswordResetEmail(email: string, token: string) {
   await sendEmail(email, "Reset your password - Lex AI", wrapHtml(content));
 }
 
+export async function sendInvitationEmail(
+  email: string,
+  organizationName: string,
+  token: string
+) {
+  const inviteUrl = `${FRONTEND_URL}/accept-invite?token=${token}`;
+
+  const content = `
+    <h2 style="margin:0 0 16px;font-size:22px;color:#18181b;">You're Invited to Lex AI</h2>
+    <p style="margin:0 0 24px;font-size:15px;color:#3f3f46;line-height:1.6;">
+      <strong>${organizationName}</strong> has invited you to access Lex AI courses.
+      Click the button below to set up your account and get started.
+    </p>
+    <a href="${inviteUrl}" style="display:inline-block;padding:12px 32px;background-color:#2563eb;color:#ffffff;text-decoration:none;border-radius:6px;font-size:15px;font-weight:500;">
+      Accept Invitation
+    </a>
+    <p style="margin:24px 0 0;font-size:13px;color:#71717a;line-height:1.5;">
+      This invitation link expires in 7 days. If you didn't expect this email, you can safely ignore it.
+    </p>`;
+
+  await sendEmail(
+    email,
+    `You're invited to Lex AI — ${organizationName}`,
+    wrapHtml(content)
+  );
+}
+
 export async function sendNoPasswordEmail(email: string) {
   const content = `
     <h2 style="margin:0 0 16px;font-size:22px;color:#18181b;">Password Reset Request</h2>

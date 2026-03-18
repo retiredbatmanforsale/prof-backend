@@ -55,12 +55,25 @@ export async function getAccessInfo(
     }
   }
 
+  const now = new Date();
   const membership = await prisma.organizationMember.findFirst({
     where: {
       userId,
       isActive: true,
       isVerified: true,
-      organization: { isActive: true },
+      organization: {
+        isActive: true,
+        OR: [
+          { accessStartDate: null },
+          { accessStartDate: { lte: now } },
+        ],
+        AND: {
+          OR: [
+            { accessEndDate: null },
+            { accessEndDate: { gte: now } },
+          ],
+        },
+      },
     },
     include: {
       organization: { select: { name: true } },
