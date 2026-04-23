@@ -11,6 +11,7 @@ import paymentRoutes from "./routes/payments/index.js";
 import subscriptionRoutes from "./routes/subscriptions/index.js";
 import razorpayWebhookRoute from "./routes/webhooks/razorpay.js";
 import quizRoutes from "./routes/quiz/index.js";
+import tutorRoutes from "./routes/tutor/index.js";
 
 export async function buildApp() {
   const app = Fastify({
@@ -94,6 +95,7 @@ export async function buildApp() {
   await app.register(subscriptionRoutes, { prefix: "/subscriptions" });
   await app.register(razorpayWebhookRoute, { prefix: "/webhooks" });
   await app.register(quizRoutes, { prefix: "/quiz" });
+  await app.register(tutorRoutes, { prefix: "/tutor" });
 
   return app;
 }
