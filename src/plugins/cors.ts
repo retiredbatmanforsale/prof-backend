@@ -11,6 +11,7 @@ export default fp(async (fastify: FastifyInstance) => {
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
       if (allowedOrigins.includes(origin)) return cb(null, true);
+      if (origin.match(/^https:\/\/[a-z0-9-]+\.lexailabs\.com$/)) return cb(null, true);
       if (process.env.NODE_ENV === "development") {
         if (origin.match(/^https?:\/\/localhost(:\d+)?$/)) return cb(null, true);
       }
