@@ -1,3 +1,4 @@
+import { Readable } from "stream";
 import type { FastifyInstance } from "fastify";
 import Anthropic from "@anthropic-ai/sdk";
 import { authenticate } from "../../hooks/auth.js";
@@ -41,25 +42,26 @@ export default async function tutorChatRoute(app: FastifyInstance) {
 
       const { topic, concepts, message, history } = parsed.data;
 
-      reply.raw.setHeader("Content-Type", "text/event-stream");
-      reply.raw.setHeader("Cache-Control", "no-cache");
-      reply.raw.setHeader("Connection", "keep-alive");
-      reply.raw.setHeader(
-        "Access-Control-Allow-Origin",
-        request.headers.origin || "*"
-      );
-      reply.raw.flushHeaders();
-      reply.hijack();
+      // Use a Node.js Readable stream so Fastify manages the response lifecycle.
+      // This is HTTP/2-compatible — the previous reply.hijack() + reply.raw.write()
+      // approach silently drops the connection body on Cloud Run's HTTP/2 transport.
+      const readable = new Readable({ read() {} });
+
+      reply
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .header("Connection", "keep-alive")
+        .send(readable);
+
+      const messages: Anthropic.MessageParam[] = [
+        ...history.map((m) => ({
+          role: m.role as "user" | "assistant",
+          content: m.content,
+        })),
+        { role: "user", content: message },
+      ];
 
       try {
-        const messages: Anthropic.MessageParam[] = [
-          ...history.map((m) => ({
-            role: m.role as "user" | "assistant",
-            content: m.content,
-          })),
-          { role: "user", content: message },
-        ];
-
         const stream = client.messages.stream({
           model: "claude-opus-4-7",
           max_tokens: 512,
@@ -72,20 +74,20 @@ export default async function tutorChatRoute(app: FastifyInstance) {
             event.type === "content_block_delta" &&
             event.delta.type === "text_delta"
           ) {
-            reply.raw.write(
+            readable.push(
               `data: ${JSON.stringify({ text: event.delta.text })}\n\n`
             );
           }
         }
 
-        reply.raw.write("data: [DONE]\n\n");
+        readable.push("data: [DONE]\n\n");
       } catch (err) {
         app.log.error(err, "Tutor stream error");
-        reply.raw.write(
+        readable.push(
           `data: ${JSON.stringify({ error: "Stream failed. Please try again." })}\n\n`
         );
       } finally {
-        reply.raw.end();
+        readable.push(null);
       }
     }
   );
