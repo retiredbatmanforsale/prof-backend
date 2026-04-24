@@ -61,7 +61,7 @@ export default async function tutorChatRoute(app: FastifyInstance) {
         ];
 
         const stream = client.messages.stream({
-          model: "claude-sonnet-4-6",
+          model: "claude-opus-4-7",
           max_tokens: 512,
           system: buildSystemPrompt(topic, concepts),
           messages,
