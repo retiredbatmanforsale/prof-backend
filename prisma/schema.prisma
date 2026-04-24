@@ -53,6 +53,7 @@ model User {
   passwordResetTokens     PasswordResetToken[]
   claimedPreloadedRecords PreloadedStudent[] @relation("ClaimedBy")
   quizAttempts            QuizAttempt[]
+  lessonProgress          LessonProgress[]
 
   @@map("users")
 }
@@ -191,6 +192,32 @@ model Subscription {
   @@index([userId])
   @@index([status])
   @@map("subscriptions")
+}
+
+// ─── Progress Tables ─────────────────────────────────────────
+
+enum ProgressStatus {
+  IN_PROGRESS
+  READ
+  MASTERED
+}
+
+model LessonProgress {
+  id         String         @id @default(cuid())
+  userId     String
+  lessonId   String
+  status     ProgressStatus @default(IN_PROGRESS)
+  readAt     DateTime?
+  masteredAt DateTime?
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, lessonId])
+  @@index([userId])
+  @@index([lessonId])
+  @@map("lesson_progress")
 }
 
 // ─── Quiz Tables ─────────────────────────────────────────────
