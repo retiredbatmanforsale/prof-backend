@@ -21,7 +21,7 @@ export default async function registerRoute(app: FastifyInstance) {
         });
       }
 
-      const { name, email, password } = parsed.data;
+      const { name, email, password, phone } = parsed.data;
 
       const existing = await app.prisma.user.findUnique({
         where: { email: email.toLowerCase() },
@@ -42,6 +42,7 @@ export default async function registerRoute(app: FastifyInstance) {
         data: {
           name,
           email: email.toLowerCase(),
+          phone: phone || null,
           hashedPassword,
         },
       });

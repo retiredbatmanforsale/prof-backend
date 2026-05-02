@@ -33,12 +33,14 @@ enum SubscriptionStatus {
 // ─── Core Tables ──────────────────────────────────────────────
 
 model User {
-  id             String    @id @default(cuid())
-  name           String
-  email          String    @unique
-  emailVerified  DateTime?
-  image          String?
-  hashedPassword String?
+  id                  String    @id @default(cuid())
+  name                String
+  email               String    @unique
+  emailVerified       DateTime?
+  phone               String?
+  razorpayCustomerId  String?   @unique
+  image               String?
+  hashedPassword      String?
   role           Role      @default(USER)
   isActive       Boolean   @default(true)
   isPremium      Boolean   @default(false)

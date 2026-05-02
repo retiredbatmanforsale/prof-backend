@@ -57,16 +57,52 @@ export function verifyPaymentSignature(
   );
 }
 
+interface CreateSubscriptionOptions {
+  customerId?: string;
+  customerNotify?: 0 | 1;
+  notifyEmail?: string;
+  notifyPhone?: string;
+  notes?: Record<string, string>;
+}
+
 export async function createSubscription(
   planId: string,
   totalCount: number,
-  notes?: Record<string, string>
+  opts: CreateSubscriptionOptions = {}
 ) {
+  const { customerId, customerNotify, notifyEmail, notifyPhone, notes } = opts;
+
+  const notifyInfo =
+    notifyEmail || notifyPhone
+      ? {
+          ...(notifyEmail ? { notify_email: notifyEmail } : {}),
+          ...(notifyPhone ? { notify_phone: notifyPhone } : {}),
+        }
+      : undefined;
+
   return getRazorpay().subscriptions.create({
     plan_id: planId,
     total_count: totalCount,
     quantity: 1,
-    notes,
+    ...(customerId ? { customer_id: customerId } : {}),
+    ...(customerNotify !== undefined ? { customer_notify: customerNotify } : {}),
+    ...(notifyInfo ? { notify_info: notifyInfo } : {}),
+    ...(notes ? { notes } : {}),
+  });
+}
+
+export async function createCustomer(
+  name: string,
+  email: string,
+  contact?: string,
+  notes?: Record<string, string>
+) {
+  return getRazorpay().customers.create({
+    name,
+    email,
+    ...(contact ? { contact } : {}),
+    fail_existing: 0,
+    ...(notes ? { notes } : {}),
   });
 }
 

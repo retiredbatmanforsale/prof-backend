@@ -13,7 +13,7 @@ const PLAN_CONFIGS: Record<PlanType, () => PlanConfig> = {
   MONTHLY: () => ({
     planType: "MONTHLY",
     razorpayPlanId: process.env.RAZORPAY_PLAN_MONTHLY || "",
-    price: parseInt(process.env.PRICE_MONTHLY || "49900", 10),
+    price: parseInt(process.env.PRICE_MONTHLY || "349900", 10),
     totalCount: 120,
     label: "Monthly",
     interval: "month",
@@ -21,7 +21,7 @@ const PLAN_CONFIGS: Record<PlanType, () => PlanConfig> = {
   QUARTERLY: () => ({
     planType: "QUARTERLY",
     razorpayPlanId: process.env.RAZORPAY_PLAN_QUARTERLY || "",
-    price: parseInt(process.env.PRICE_QUARTERLY || "119900", 10),
+    price: parseInt(process.env.PRICE_QUARTERLY || "899900", 10),
     totalCount: 40,
     label: "Quarterly",
     interval: "3 months",
@@ -29,7 +29,7 @@ const PLAN_CONFIGS: Record<PlanType, () => PlanConfig> = {
   YEARLY: () => ({
     planType: "YEARLY",
     razorpayPlanId: process.env.RAZORPAY_PLAN_YEARLY || "",
-    price: parseInt(process.env.PRICE_YEARLY || "399900", 10),
+    price: parseInt(process.env.PRICE_YEARLY || "1999900", 10),
     totalCount: 10,
     label: "Yearly",
     interval: "year",

@@ -5,6 +5,7 @@ import { getPlanConfig, getAllPlanConfigs } from "../../lib/plans.js";
 import {
   createSubscription,
   cancelSubscription,
+  createCustomer,
   verifySubscriptionSignature,
 } from "../../lib/razorpay.js";
 
@@ -53,10 +54,21 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
       // Check if user already has access
       const user = await app.prisma.user.findUnique({
         where: { id: userId },
-        select: { isPremium: true, email: true },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          phone: true,
+          isPremium: true,
+          razorpayCustomerId: true,
+        },
       });
 
-      if (user?.isPremium) {
+      if (!user) {
+        return reply.status(404).send({ error: "User not found." });
+      }
+
+      if (user.isPremium) {
         return reply
           .status(400)
           .send({ error: "You already have active access." });
@@ -110,11 +122,38 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
 
       const plan = getPlanConfig(planType as PlanType);
 
-      const razorpaySub = await createSubscription(
-        plan.razorpayPlanId,
-        plan.totalCount,
-        { userId, planType }
-      );
+      // Ensure user has a Razorpay customer record (reuse if exists, create if not)
+      let customerId = user.razorpayCustomerId;
+      if (!customerId) {
+        try {
+          const customer = await createCustomer(
+            user.name,
+            user.email,
+            user.phone || undefined,
+            { userId: user.id }
+          );
+          customerId = customer.id;
+          await app.prisma.user.update({
+            where: { id: user.id },
+            data: { razorpayCustomerId: customerId },
+          });
+        } catch (err) {
+          // Don't block subscription on customer creation failure — Razorpay
+          // will still link to the user implicitly via email.
+          app.log.warn(
+            { userId: user.id, err },
+            "Razorpay customer creation failed, continuing without customer_id"
+          );
+        }
+      }
+
+      const razorpaySub = await createSubscription(plan.razorpayPlanId, plan.totalCount, {
+        customerId: customerId || undefined,
+        customerNotify: 1,
+        notifyEmail: user.email,
+        notifyPhone: user.phone || undefined,
+        notes: { userId, planType },
+      });
 
       await app.prisma.subscription.create({
         data: {
@@ -126,6 +165,18 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
           shortUrl: razorpaySub.short_url || null,
         },
       });
+
+      app.log.info(
+        {
+          userId,
+          subscriptionId: razorpaySub.id,
+          planType,
+          customerId,
+          notifyEmail: user.email,
+          notifyPhone: user.phone || null,
+        },
+        "Subscription created"
+      );
 
       return reply.send({
         subscriptionId: razorpaySub.id,

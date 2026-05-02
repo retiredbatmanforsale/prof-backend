@@ -60,6 +60,18 @@ function wrapHtml(content: string): string {
               </p>
             </td>
           </tr>
+          <tr>
+            <td style="padding:20px 40px 28px;border-top:1px solid #e4e4e7;background-color:#fafafa;">
+              <p style="margin:0;font-size:11px;color:#a1a1aa;line-height:1.6;">
+                <strong style="color:#71717a;">Lex AI Technologies Pvt Ltd</strong><br>
+                Level 18, ONE HORIZON CENTER, Unit-59, Golf Course Rd<br>
+                DLF Phase 5, Sector 43, Gurugram, Haryana 122002<br>
+                <a href="mailto:support@lexailabs.com" style="color:#a1a1aa;">support@lexailabs.com</a>
+                &nbsp;&middot;&nbsp;
+                <a href="tel:+919996692323" style="color:#a1a1aa;">+91 99966 92323</a>
+              </p>
+            </td>
+          </tr>
         </table>
       </td>
     </tr>

@@ -129,6 +129,26 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
         });
       }
 
+      app.log.warn(
+        { orderId, paymentId: paymentEntity?.id },
+        "Payment failed webhook received"
+      );
+      return reply.send({ received: true });
+    }
+
+    if (event === "payment.authorized") {
+      // Razorpay sends this between created and captured for some flows
+      // (manual capture, 3D Secure). Mostly informational — auto-capture
+      // is the default, so payment.captured will follow shortly.
+      const paymentEntity = payload.payload?.payment?.entity;
+      app.log.info(
+        {
+          orderId: paymentEntity?.order_id,
+          paymentId: paymentEntity?.id,
+          status: paymentEntity?.status,
+        },
+        "Payment authorized — awaiting capture"
+      );
       return reply.send({ received: true });
     }
 
@@ -154,6 +174,13 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
       ? new Date(subEntity.current_end * 1000)
       : subscription.currentPeriodEnd;
 
+    const logCtx = {
+      event,
+      subscriptionId: subEntity.id,
+      userId: subscription.userId,
+      planType: subscription.planType,
+    };
+
     switch (event) {
       case "subscription.activated": {
         await app.prisma.$transaction([
@@ -170,6 +197,7 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
             data: { isPremium: true },
           }),
         ]);
+        app.log.info(logCtx, "Subscription activated, user granted premium");
         break;
       }
 
@@ -188,6 +216,7 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
             data: { isPremium: true },
           }),
         ]);
+        app.log.info(logCtx, "Subscription charged, period extended");
         break;
       }
 
@@ -196,6 +225,7 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
           where: { id: subscription.id },
           data: { status: "PENDING" },
         });
+        app.log.warn(logCtx, "Subscription entered pending state, payment retry window open");
         // Keep isPremium true — payment retry window
         break;
       }
@@ -219,6 +249,7 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
                 }),
               ]),
         ]);
+        app.log.warn({ ...logCtx, keepPremium }, "Subscription halted after retry exhaustion");
         break;
       }
 
@@ -247,6 +278,7 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
                 }),
               ]),
         ]);
+        app.log.info({ ...logCtx, keepPremium }, "Subscription cancelled");
         break;
       }
 
@@ -272,6 +304,7 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
                 }),
               ]),
         ]);
+        app.log.info({ ...logCtx, keepPremium }, "Subscription completed (term ended)");
         break;
       }
 
@@ -294,6 +327,7 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
                 }),
               ]),
         ]);
+        app.log.info({ ...logCtx, keepPremium }, "Subscription paused");
         break;
       }
 
@@ -312,6 +346,7 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
             data: { isPremium: true },
           }),
         ]);
+        app.log.info(logCtx, "Subscription resumed, user re-granted premium");
         break;
       }
 
