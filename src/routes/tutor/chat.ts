@@ -63,9 +63,21 @@ export default async function tutorChatRoute(app: FastifyInstance) {
 
       try {
         const stream = client.messages.stream({
-          model: "claude-opus-4-7",
+          model: "claude-haiku-4-5",
           max_tokens: 512,
-          system: buildSystemPrompt(topic, concepts),
+          // System prompt is deterministic per (topic, concepts) and reused
+          // across the 6–8 turn conversation, so mark it cacheable. Note:
+          // Haiku 4.5's minimum cacheable prefix is 4096 tokens — at the
+          // current ~250-token prompt this is a silent no-op, but it costs
+          // nothing and activates automatically if the prompt ever grows
+          // (e.g. if we add few-shot examples).
+          system: [
+            {
+              type: "text",
+              text: buildSystemPrompt(topic, concepts),
+              cache_control: { type: "ephemeral" },
+            },
+          ],
           messages,
         });
 
