@@ -5,6 +5,7 @@ import { authenticate } from "../../hooks/auth.js";
 import { tutorChatSchema } from "../../schemas/tutor.js";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const hasAnthropicKey = !!process.env.ANTHROPIC_API_KEY;
 
 function buildSystemPrompt(topic: string, concepts: string[]): string {
   return `You are a Socratic tutor for an AI/ML engineering course called Prof by Lex AI.
@@ -42,15 +43,29 @@ export default async function tutorChatRoute(app: FastifyInstance) {
 
       const { topic, concepts, message, history } = parsed.data;
 
-      // Use a Node.js Readable stream so Fastify manages the response lifecycle.
-      // This is HTTP/2-compatible — the previous reply.hijack() + reply.raw.write()
-      // approach silently drops the connection body on Cloud Run's HTTP/2 transport.
+      // Fail fast if the SDK can't authenticate — otherwise the error only
+      // surfaces deep inside the stream loop and the user just sees "Stream
+      // failed" with no actionable signal.
+      if (!hasAnthropicKey) {
+        app.log.error("ANTHROPIC_API_KEY is not set on this Cloud Run service");
+        return reply.status(503).send({
+          error: "Tutor is not configured. Please contact support.",
+        });
+      }
+
+      // Use a Node.js Readable stream so Fastify manages the response
+      // lifecycle. Headers chosen for HTTP/2 + Cloud Run's load balancer:
+      //   - No `Connection: keep-alive` — that header is illegal on HTTP/2
+      //     and gets stripped or rejected by some stacks.
+      //   - `X-Accel-Buffering: no` — instructs nginx-style proxies not to
+      //     buffer the response. Without it, SSE deltas can be held until
+      //     the full response completes, which looks identical to a hang.
       const readable = new Readable({ read() {} });
 
       reply
         .header("Content-Type", "text/event-stream")
-        .header("Cache-Control", "no-cache")
-        .header("Connection", "keep-alive")
+        .header("Cache-Control", "no-cache, no-transform")
+        .header("X-Accel-Buffering", "no")
         .send(readable);
 
       const messages: Anthropic.MessageParam[] = [
@@ -94,9 +109,28 @@ export default async function tutorChatRoute(app: FastifyInstance) {
 
         readable.push("data: [DONE]\n\n");
       } catch (err) {
-        app.log.error(err, "Tutor stream error");
+        // Log structured detail for Cloud Run, surface a useful message to
+        // the client. Anthropic SDK errors carry .status and .message; other
+        // errors fall back to a generic message but log the full object.
+        const status =
+          err && typeof err === "object" && "status" in err
+            ? (err as { status?: number }).status
+            : undefined;
+        const message =
+          err instanceof Error ? err.message : "Unknown stream error";
+        app.log.error(
+          { err, status, model: "claude-haiku-4-5" },
+          "Tutor stream error"
+        );
         readable.push(
-          `data: ${JSON.stringify({ error: "Stream failed. Please try again." })}\n\n`
+          `data: ${JSON.stringify({
+            error: status === 401 || status === 403
+              ? "Tutor service authentication failed. Please contact support."
+              : status === 429
+                ? "Tutor is rate-limited right now. Please try again in a minute."
+                : `Tutor failed: ${message}`,
+            status,
+          })}\n\n`
         );
       } finally {
         readable.push(null);
