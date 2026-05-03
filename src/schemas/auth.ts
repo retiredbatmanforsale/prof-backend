@@ -62,6 +62,30 @@ export const resetPasswordSchema = z.object({
     .max(128),
 });
 
+// Waitlist capture — email is required, everything else optional.
+// Source must be one of the known surfaces so we can segment in the
+// admin panel without juggling free-form strings.
+export const waitlistSchema = z.object({
+  email: z.string().email("Invalid email").max(255),
+  source: z
+    .string()
+    .min(1, "source is required")
+    .max(64, "source too long")
+    .regex(/^[a-z0-9-]+$/, "source must be lowercase / digits / hyphens"),
+  // Self-reported, all optional. The /experiences and /subscribe forms
+  // only send email + source today; the dedicated waitlist landing
+  // collects the richer set.
+  name: z.string().max(120).optional(),
+  phone: z.string().max(32).optional(),
+  organization: z.string().max(160).optional(),
+  role: z.string().max(64).optional(),
+  // Auto-captured by the frontend.
+  referrer: z.string().max(512).optional(),
+  utmSource: z.string().max(120).optional(),
+  utmMedium: z.string().max(120).optional(),
+  utmCampaign: z.string().max(120).optional(),
+});
+
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type UpdatePhoneInput = z.infer<typeof updatePhoneSchema>;
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
@@ -71,3 +95,4 @@ export type RefreshInput = z.infer<typeof refreshSchema>;
 export type LogoutInput = z.infer<typeof logoutSchema>;
 export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
+export type WaitlistInput = z.infer<typeof waitlistSchema>;

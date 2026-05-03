@@ -124,7 +124,7 @@ export default async function dashboardRoutes(app: FastifyInstance) {
 
       // ── Pulse: last 24h ─────────────────────────────────────────
       const oneDayAgo = new Date(now.getTime() - DAY_MS);
-      const [pulseSignups, pulsePaid, pulseCancelled, pulseRefunded] = await Promise.all([
+      const [pulseSignups, pulsePaid, pulseCancelled, pulseRefunded, pulseWaitlist] = await Promise.all([
         app.prisma.user.count({ where: { createdAt: { gte: oneDayAgo } } }),
         app.prisma.subscription.count({
           where: { firstPaymentAt: { gte: oneDayAgo } },
@@ -134,6 +134,15 @@ export default async function dashboardRoutes(app: FastifyInstance) {
         }),
         app.prisma.subscription.count({
           where: { refundedAt: { gte: oneDayAgo } },
+        }),
+        app.prisma.waitlistEntry.count({ where: { createdAt: { gte: oneDayAgo } } }),
+      ]);
+
+      // ── Waitlist totals ─────────────────────────────────────────
+      const [waitlistTotal, waitlistLast7d] = await Promise.all([
+        app.prisma.waitlistEntry.count(),
+        app.prisma.waitlistEntry.count({
+          where: { createdAt: { gte: sevenDaysAgo } },
         }),
       ]);
 
@@ -172,11 +181,16 @@ export default async function dashboardRoutes(app: FastifyInstance) {
           paid: paid30d,
           pct: Math.round(refundRatePct * 10) / 10,
         },
+        waitlist: {
+          total: waitlistTotal,
+          newLast7d: waitlistLast7d,
+        },
         pulse24h: {
           signups: pulseSignups,
           paid: pulsePaid,
           cancelled: pulseCancelled,
           refunded: pulseRefunded,
+          waitlist: pulseWaitlist,
         },
         generatedAt: now.toISOString(),
       });

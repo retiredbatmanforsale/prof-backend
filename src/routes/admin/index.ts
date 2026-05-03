@@ -6,6 +6,7 @@ import studentRoutes from "./students.js";
 import refundRoutes from "./refunds.js";
 import dashboardRoutes from "./dashboard.js";
 import usersDirectoryRoutes from "./users.js";
+import adminWaitlistRoutes from "./waitlist.js";
 
 export default async function adminRoutes(app: FastifyInstance) {
   // All admin routes require authentication + admin role
@@ -17,4 +18,5 @@ export default async function adminRoutes(app: FastifyInstance) {
   await app.register(refundRoutes);
   await app.register(dashboardRoutes);
   await app.register(usersDirectoryRoutes);
+  await app.register(adminWaitlistRoutes);
 }

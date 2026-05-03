@@ -250,6 +250,54 @@ model QuizAttempt {
   @@map("quiz_attempts")
 }
 
+// ─── Waitlist ─────────────────────────────────────────────────
+
+// Pre-launch lead capture from any surface that asks for an email —
+// /experiences, the Memorandum PDF gate on /subscribe, the standalone
+// waitlist.lexailabs.com landing, etc. One row per email; the source
+// + metadata fields let us segment by acquisition channel and campaign.
+model WaitlistEntry {
+  id             String    @id @default(cuid())
+  email          String    @unique
+  source         String
+
+  // Optional self-reported fields. Most surfaces only collect email; the
+  // dedicated waitlist landing will capture name/role/org via a fuller
+  // form. Schema accommodates both without forcing any one form to ask.
+  name           String?
+  phone          String?
+  organization   String?
+  role           String?
+
+  // Auto-captured attribution. Lets us tell apart organic LinkedIn
+  // traffic from a paid Reddit drop without changing the form.
+  referrer       String?
+  utmSource      String?
+  utmMedium      String?
+  utmCampaign    String?
+  ipAddress      String?
+  userAgent      String?
+  metadata       Json?
+
+  // Conversion funnel tracking — set when the waitlist member finally
+  // signs up (and again if they subscribe). Lets us measure the full
+  // signup → paid path back to the original waitlist source.
+  notified       Boolean   @default(false)
+  notifiedAt     DateTime?
+  convertedUserId String?
+  convertedAt    DateTime?
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  // Bumps on every re-submission of the same email so we can prioritise
+  // re-engaged visitors when we send the launch email.
+  lastSeenAt     DateTime  @default(now())
+
+  @@index([source])
+  @@index([createdAt])
+  @@map("waitlist_entries")
+}
+
 // ─── Auth Support Tables ──────────────────────────────────────
 
 model EmailVerificationToken {
