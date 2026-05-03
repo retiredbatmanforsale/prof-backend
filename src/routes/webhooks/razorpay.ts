@@ -1,5 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { verifyWebhookSignatureFn } from "../../lib/razorpay.js";
+import {
+  sendRefundProcessedEmail,
+  sendRefundFailedSupportAlert,
+} from "../../lib/email.js";
 
 export default async function razorpayWebhookRoute(app: FastifyInstance) {
   // Override JSON parser to capture raw body for signature verification
@@ -215,11 +219,44 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
           },
           "Refund FAILED — premium re-granted, requires manual support reconciliation"
         );
+        // Alert support out-of-band.
+        const user = await app.prisma.user.findUnique({
+          where: { id: sub.userId },
+          select: { email: true },
+        });
+        if (user?.email) {
+          sendRefundFailedSupportAlert(
+            user.email,
+            sub.refundAmount ?? refundEntity?.amount ?? 0,
+            refundId,
+            sub.id
+          ).catch((err) =>
+            app.log.warn({ refundId, err }, "Refund-failed alert email failed")
+          );
+        }
       } else {
         app.log.info(
           { event, refundId, subscriptionId: sub.id, status: newStatus },
           "Refund webhook processed"
         );
+        if (event === "refund.processed") {
+          const user = await app.prisma.user.findUnique({
+            where: { id: sub.userId },
+            select: { email: true },
+          });
+          if (user?.email) {
+            sendRefundProcessedEmail(
+              user.email,
+              sub.refundAmount ?? refundEntity?.amount ?? 0,
+              refundId
+            ).catch((err) =>
+              app.log.warn(
+                { refundId, err },
+                "Refund-processed email failed"
+              )
+            );
+          }
+        }
       }
 
       return reply.send({ received: true });

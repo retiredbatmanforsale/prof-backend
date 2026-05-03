@@ -3,6 +3,7 @@ import { authenticate } from "../../hooks/auth.js";
 import { requireAdmin } from "../../hooks/admin.js";
 import organizationRoutes from "./organizations.js";
 import studentRoutes from "./students.js";
+import refundRoutes from "./refunds.js";
 
 export default async function adminRoutes(app: FastifyInstance) {
   // All admin routes require authentication + admin role
@@ -11,4 +12,5 @@ export default async function adminRoutes(app: FastifyInstance) {
 
   await app.register(organizationRoutes);
   await app.register(studentRoutes);
+  await app.register(refundRoutes);
 }

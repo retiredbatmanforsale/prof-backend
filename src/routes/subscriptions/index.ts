@@ -9,6 +9,7 @@ import {
   verifySubscriptionSignature,
   refundPayment,
 } from "../../lib/razorpay.js";
+import { sendRefundIssuedEmail } from "../../lib/email.js";
 
 const REFUND_WINDOW_HOURS = 7 * 24;
 const REFUND_WINDOW_MS = REFUND_WINDOW_HOURS * 60 * 60 * 1000;
@@ -539,6 +540,22 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
         },
         "Refund issued, premium revoked"
       );
+
+      // Fire-and-forget email. Don't block the API response or fail the
+      // refund if email throws — refund is the contract, email is courtesy.
+      app.prisma.user
+        .findUnique({ where: { id: userId }, select: { email: true } })
+        .then((u) => {
+          if (u?.email) {
+            return sendRefundIssuedEmail(u.email, refundAmount, refund.id);
+          }
+        })
+        .catch((err) =>
+          app.log.warn(
+            { userId, refundId: refund.id, err },
+            "Refund email send failed"
+          )
+        );
 
       return reply.send({
         success: true,

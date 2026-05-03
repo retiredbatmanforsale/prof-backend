@@ -167,6 +167,76 @@ export async function sendInvitationEmail(
   );
 }
 
+function formatRupees(paise: number): string {
+  return "₹" + (paise / 100).toLocaleString("en-IN");
+}
+
+export async function sendRefundIssuedEmail(
+  email: string,
+  amountPaise: number,
+  refundId: string
+) {
+  const content = `
+    <h2 style="margin:0 0 16px;font-size:22px;color:#18181b;">Refund issued</h2>
+    <p style="margin:0 0 16px;font-size:15px;color:#3f3f46;line-height:1.6;">
+      We've issued a full refund of <strong>${formatRupees(amountPaise)}</strong> for your Lex AI subscription.
+    </p>
+    <p style="margin:0 0 24px;font-size:15px;color:#3f3f46;line-height:1.6;">
+      Funds typically arrive in your account within <strong>5–7 business days</strong>, depending on your bank.
+      Your access to courses has ended.
+    </p>
+    <p style="margin:0 0 8px;font-size:13px;color:#71717a;line-height:1.5;">
+      Refund reference: <code style="background:#f4f4f5;padding:2px 6px;border-radius:4px;">${refundId}</code>
+    </p>
+    <p style="margin:24px 0 0;font-size:13px;color:#71717a;line-height:1.5;">
+      Questions? Reply to this email or write to <a href="mailto:support@lexailabs.com" style="color:#2563eb;">support@lexailabs.com</a>.
+    </p>`;
+
+  await sendEmail(email, "Refund issued - Lex AI", wrapHtml(content));
+}
+
+export async function sendRefundProcessedEmail(
+  email: string,
+  amountPaise: number,
+  refundId: string
+) {
+  const content = `
+    <h2 style="margin:0 0 16px;font-size:22px;color:#18181b;">Refund completed</h2>
+    <p style="margin:0 0 24px;font-size:15px;color:#3f3f46;line-height:1.6;">
+      Your refund of <strong>${formatRupees(amountPaise)}</strong> has been processed and the funds
+      have been sent to your account. It may take a day or two for your bank to reflect the credit.
+    </p>
+    <p style="margin:0 0 8px;font-size:13px;color:#71717a;line-height:1.5;">
+      Refund reference: <code style="background:#f4f4f5;padding:2px 6px;border-radius:4px;">${refundId}</code>
+    </p>`;
+
+  await sendEmail(email, "Refund completed - Lex AI", wrapHtml(content));
+}
+
+export async function sendRefundFailedSupportAlert(
+  userEmail: string,
+  amountPaise: number,
+  refundId: string,
+  subscriptionId: string
+) {
+  const content = `
+    <h2 style="margin:0 0 16px;font-size:22px;color:#b91c1c;">Refund FAILED — manual reconciliation needed</h2>
+    <p style="margin:0 0 16px;font-size:15px;color:#3f3f46;line-height:1.6;">
+      Razorpay reported a refund failure. Premium has been re-granted to the user.
+    </p>
+    <ul style="margin:0 0 24px;padding-left:20px;font-size:14px;color:#3f3f46;line-height:1.8;">
+      <li><strong>User:</strong> ${userEmail}</li>
+      <li><strong>Amount:</strong> ${formatRupees(amountPaise)}</li>
+      <li><strong>Refund ID:</strong> <code>${refundId}</code></li>
+      <li><strong>Subscription ID:</strong> <code>${subscriptionId}</code></li>
+    </ul>
+    <p style="margin:0;font-size:13px;color:#71717a;line-height:1.5;">
+      Check the Razorpay dashboard, contact the user, and resolve the refund manually.
+    </p>`;
+
+  await sendEmail("support@lexailabs.com", `[ALERT] Refund failed for ${userEmail}`, wrapHtml(content));
+}
+
 export async function sendNoPasswordEmail(email: string) {
   const content = `
     <h2 style="margin:0 0 16px;font-size:22px;color:#18181b;">Password Reset Request</h2>
