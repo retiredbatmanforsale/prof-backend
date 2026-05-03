@@ -117,6 +117,25 @@ export async function cancelSubscription(
   return getRazorpay().subscriptions.cancel(subscriptionId, cancelAtCycleEnd);
 }
 
+export async function refundPayment(
+  paymentId: string,
+  amount?: number,
+  notes?: Record<string, string>
+) {
+  // Omitting amount issues a full refund. speed=normal goes via Razorpay's
+  // standard rails (5–7 business days). Use 'optimum' if you want them to
+  // pick the fastest method available per instrument.
+  return getRazorpay().payments.refund(paymentId, {
+    ...(amount !== undefined ? { amount } : {}),
+    speed: "normal",
+    ...(notes ? { notes } : {}),
+  });
+}
+
+export async function fetchPayment(paymentId: string) {
+  return getRazorpay().payments.fetch(paymentId);
+}
+
 export function verifySubscriptionSignature(
   subscriptionId: string,
   paymentId: string,

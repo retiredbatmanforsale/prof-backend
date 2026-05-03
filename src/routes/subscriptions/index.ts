@@ -7,7 +7,11 @@ import {
   cancelSubscription,
   createCustomer,
   verifySubscriptionSignature,
+  refundPayment,
 } from "../../lib/razorpay.js";
+
+const REFUND_WINDOW_HOURS = 7 * 24;
+const REFUND_WINDOW_MS = REFUND_WINDOW_HOURS * 60 * 60 * 1000;
 
 function formatPrice(paise: number): string {
   const rupees = paise / 100;
@@ -250,6 +254,14 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
             status: "AUTHENTICATED",
             currentPeriodStart: now,
             currentPeriodEnd: periodEnd,
+            // Anchor the 7-day refund window to the first verified payment.
+            // Only set if not already populated (idempotent across retries).
+            ...(subscription.firstPaymentId
+              ? {}
+              : {
+                  firstPaymentId: razorpay_payment_id,
+                  firstPaymentAt: now,
+                }),
           },
         }),
         app.prisma.user.update({
@@ -284,12 +296,26 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
         currentPeriodEnd: true,
         cancelledAt: true,
         createdAt: true,
+        firstPaymentAt: true,
+        refundedAt: true,
+        refundStatus: true,
+        refundAmount: true,
       },
     });
 
     if (!subscription) {
       return reply.send({ subscription: null });
     }
+
+    const refundEligibleUntil = subscription.firstPaymentAt
+      ? new Date(subscription.firstPaymentAt.getTime() + REFUND_WINDOW_MS)
+      : null;
+    const isRefundEligible =
+      !!refundEligibleUntil &&
+      !subscription.refundedAt &&
+      refundEligibleUntil.getTime() > Date.now() &&
+      (subscription.status === "ACTIVE" ||
+        subscription.status === "AUTHENTICATED");
 
     return reply.send({
       subscription: {
@@ -299,6 +325,11 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
         currentPeriodEnd: subscription.currentPeriodEnd,
         cancelledAt: subscription.cancelledAt,
         createdAt: subscription.createdAt,
+        refundedAt: subscription.refundedAt,
+        refundStatus: subscription.refundStatus,
+        refundAmount: subscription.refundAmount,
+        isRefundEligible,
+        refundEligibleUntil,
       },
     });
   });
@@ -386,6 +417,136 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
         success: true,
         message: "Subscription will be cancelled at the end of the current billing period.",
         currentPeriodEnd: subscription.currentPeriodEnd,
+      });
+    }
+  );
+
+  // POST /subscriptions/refund
+  // 7-day refund window from firstPaymentAt. One refund per subscription.
+  // On success: full refund issued, sub cancelled immediately, isPremium=false.
+  app.post(
+    "/refund",
+    {
+      preHandler: [authenticate],
+      config: {
+        rateLimit: { max: 3, timeWindow: "1 minute" },
+      },
+    },
+    async (request, reply) => {
+      const userId = request.currentUser!.userId;
+
+      const subscription = await app.prisma.subscription.findFirst({
+        where: {
+          userId,
+          status: { in: ["ACTIVE", "AUTHENTICATED"] },
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+      if (!subscription) {
+        return reply.status(404).send({ error: "No refundable subscription found." });
+      }
+
+      if (subscription.refundedAt) {
+        return reply
+          .status(400)
+          .send({ error: "This subscription has already been refunded." });
+      }
+
+      if (!subscription.firstPaymentId || !subscription.firstPaymentAt) {
+        // Should be impossible for a sub that reached ACTIVE/AUTHENTICATED
+        // post-PR1, but guard anyway — pre-PR1 subs have no payment anchor.
+        return reply.status(400).send({
+          error:
+            "Refund unavailable for this subscription. Please contact support.",
+        });
+      }
+
+      const ageMs = Date.now() - subscription.firstPaymentAt.getTime();
+      if (ageMs > REFUND_WINDOW_MS) {
+        return reply.status(400).send({
+          error: `Refund window has expired (7 days from first payment).`,
+        });
+      }
+
+      const plan = getPlanConfig(subscription.planType);
+      const refundAmount = plan.price;
+
+      // Issue refund first. If this throws, we don't mutate local state —
+      // user can retry. If it succeeds we MUST flip our state, otherwise
+      // they keep premium with refunded money.
+      let refund;
+      try {
+        refund = await refundPayment(subscription.firstPaymentId, refundAmount, {
+          userId,
+          subscriptionId: subscription.id,
+          reason: "user_requested_7day_refund",
+        });
+      } catch (err: unknown) {
+        const message =
+          err instanceof Error ? err.message : "Refund request failed";
+        app.log.error(
+          {
+            userId,
+            subscriptionId: subscription.id,
+            paymentId: subscription.firstPaymentId,
+            err,
+          },
+          "Razorpay refund failed"
+        );
+        return reply.status(502).send({
+          error: `Refund could not be processed: ${message}. Please contact support.`,
+        });
+      }
+
+      // Best-effort: cancel the Razorpay subscription immediately so no
+      // further auto-debit attempts. If this fails we still proceed —
+      // refund is the user-visible commitment.
+      try {
+        await cancelSubscription(subscription.razorpaySubscriptionId, false);
+      } catch (err) {
+        app.log.warn(
+          { subscriptionId: subscription.id, err },
+          "Razorpay cancel-after-refund failed (refund still issued)"
+        );
+      }
+
+      const now = new Date();
+      await app.prisma.$transaction([
+        app.prisma.subscription.update({
+          where: { id: subscription.id },
+          data: {
+            refundId: refund.id,
+            refundedAt: now,
+            refundStatus: refund.status || "processing",
+            refundAmount,
+            cancelledAt: subscription.cancelledAt ?? now,
+          },
+        }),
+        app.prisma.user.update({
+          where: { id: userId },
+          data: { isPremium: false },
+        }),
+      ]);
+
+      app.log.info(
+        {
+          userId,
+          subscriptionId: subscription.id,
+          refundId: refund.id,
+          amount: refundAmount,
+          status: refund.status,
+        },
+        "Refund issued, premium revoked"
+      );
+
+      return reply.send({
+        success: true,
+        refundId: refund.id,
+        refundAmount,
+        refundStatus: refund.status || "processing",
+        message:
+          "Refund issued. Funds typically arrive in 5–7 business days. Your access has been revoked.",
       });
     }
   );

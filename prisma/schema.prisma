@@ -186,6 +186,15 @@ model Subscription {
   cancelledAt            DateTime?
   endedAt                DateTime?
   shortUrl               String?
+  // First captured payment on this subscription — the only payment eligible
+  // for the 7-day refund window.
+  firstPaymentId         String?
+  firstPaymentAt         DateTime?
+  // Refund tracking. One refund per subscription (v1).
+  refundId               String?
+  refundedAt             DateTime?
+  refundStatus           String?
+  refundAmount           Int?
   createdAt              DateTime           @default(now())
   updatedAt              DateTime           @updatedAt
 

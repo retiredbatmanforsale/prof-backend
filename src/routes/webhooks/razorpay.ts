@@ -66,6 +66,14 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
             ended_at?: number | null;
           };
         };
+        refund?: {
+          entity?: {
+            id?: string;
+            payment_id?: string;
+            amount?: number;
+            status?: string;
+          };
+        };
       };
     };
 
@@ -152,6 +160,71 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
       return reply.send({ received: true });
     }
 
+    // ─── Refund events ─────────────────────────────────────────
+    if (
+      event === "refund.created" ||
+      event === "refund.processed" ||
+      event === "refund.failed"
+    ) {
+      const refundEntity = payload.payload?.refund?.entity;
+      const refundId = refundEntity?.id;
+      if (!refundId) {
+        return reply.send({ received: true });
+      }
+
+      const sub = await app.prisma.subscription.findFirst({
+        where: { refundId },
+      });
+
+      if (!sub) {
+        // Refund originated outside our flow (e.g. one-time order refund or
+        // manual dashboard refund). Nothing to reconcile here for v1.
+        app.log.info(
+          { event, refundId, paymentId: refundEntity?.payment_id },
+          "Refund webhook for unknown subscription refund"
+        );
+        return reply.send({ received: true });
+      }
+
+      const newStatus =
+        event === "refund.processed"
+          ? "processed"
+          : event === "refund.failed"
+            ? "failed"
+            : "processing";
+
+      await app.prisma.subscription.update({
+        where: { id: sub.id },
+        data: { refundStatus: newStatus },
+      });
+
+      if (event === "refund.failed") {
+        // Re-grant premium so user isn't left without access AND without
+        // refund. Support will reconcile manually.
+        await app.prisma.user.update({
+          where: { id: sub.userId },
+          data: { isPremium: true },
+        });
+        app.log.error(
+          {
+            event,
+            refundId,
+            subscriptionId: sub.id,
+            userId: sub.userId,
+            amount: refundEntity?.amount,
+          },
+          "Refund FAILED — premium re-granted, requires manual support reconciliation"
+        );
+      } else {
+        app.log.info(
+          { event, refundId, subscriptionId: sub.id, status: newStatus },
+          "Refund webhook processed"
+        );
+      }
+
+      return reply.send({ received: true });
+    }
+
     // ─── Subscription events ───────────────────────────────────
     const subEntity = payload.payload?.subscription?.entity;
     if (!subEntity?.id) {
@@ -202,6 +275,14 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
       }
 
       case "subscription.charged": {
+        // Razorpay includes the just-charged payment alongside the subscription
+        // entity. If we never captured firstPaymentId on /verify (e.g. UPI
+        // mandate flows that authorize without a synchronous payment_id),
+        // backfill from this event so the 7-day refund window has a target.
+        const chargedPaymentId = payload.payload?.payment?.entity?.id;
+        const shouldSetFirstPayment =
+          !subscription.firstPaymentId && !!chargedPaymentId;
+
         await app.prisma.$transaction([
           app.prisma.subscription.update({
             where: { id: subscription.id },
@@ -209,6 +290,12 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
               status: "ACTIVE",
               currentPeriodStart: periodStart,
               currentPeriodEnd: periodEnd,
+              ...(shouldSetFirstPayment
+                ? {
+                    firstPaymentId: chargedPaymentId,
+                    firstPaymentAt: new Date(),
+                  }
+                : {}),
             },
           }),
           app.prisma.user.update({
