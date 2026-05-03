@@ -1,5 +1,6 @@
-import Fastify from "fastify";
+import Fastify, { type FastifyError } from "fastify";
 import helmetPlugin from "@fastify/helmet";
+import { Sentry } from "./lib/sentry.js";
 import corsPlugin from "./plugins/cors.js";
 import jwtPlugin from "./plugins/jwt.js";
 import prismaPlugin from "./plugins/prisma.js";
@@ -87,6 +88,27 @@ export async function buildApp() {
     }
 
     return reply.send(diagnostics);
+  });
+
+  // Sentry: capture every 5xx and unhandled error (no-op if SENTRY_DSN
+  // unset — initSentry() guards init).
+  app.setErrorHandler((error: FastifyError, request, reply) => {
+    if (process.env.SENTRY_DSN) {
+      Sentry.withScope((scope) => {
+        scope.setTag("path", request.url);
+        scope.setTag("method", request.method);
+        if (request.user && typeof request.user === "object" && "id" in request.user) {
+          scope.setUser({ id: String((request.user as { id: unknown }).id) });
+        }
+        Sentry.captureException(error);
+      });
+    }
+    request.log.error(error);
+    const statusCode = error.statusCode ?? 500;
+    reply.status(statusCode).send({
+      error: error.name || "InternalServerError",
+      message: statusCode >= 500 ? "Internal server error" : error.message,
+    });
   });
 
   // Register routes

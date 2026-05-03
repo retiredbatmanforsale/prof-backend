@@ -1,3 +1,9 @@
+// Sentry must initialize before any other imports that might throw
+// at boot time, so its instrumentation hooks can attach to fastify
+// + node's HTTP layer before they're loaded.
+import { initSentry } from "./lib/sentry.js";
+initSentry();
+
 import { buildApp } from "./app.js";
 
 const PORT = parseInt(process.env.PORT || "4000", 10);
