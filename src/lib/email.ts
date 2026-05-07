@@ -368,8 +368,6 @@ export async function sendChargeReceiptEmail(input: ChargeReceiptInput) {
     </p>
     <p style="margin:0 0 24px;font-size:13px;color:#71717a;line-height:1.5;">
       Billed by Lex AI Technologies Pvt Ltd, Gurugram, Haryana.
-      For B2B GST credit, reply to this email with your GSTIN and we'll
-      send a re-issued tax invoice.
     </p>
     <p style="margin:0 0 4px;font-size:13px;color:#71717a;line-height:1.5;">
       Manage your subscription anytime at
