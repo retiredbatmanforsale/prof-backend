@@ -5,6 +5,7 @@ import {
   sendRefundProcessedEmail,
   sendRefundFailedSupportAlert,
   sendPaymentFailedEmail,
+  sendChargeReceiptEmail,
 } from "../../lib/email.js";
 
 function planLabel(planType: string): string {
@@ -349,6 +350,12 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
           }
         }
 
+        // Receipt idempotency — skip emailing if we already sent one
+        // for this exact payment_id (handles webhook replays).
+        const shouldSendReceipt =
+          !!chargedPaymentId &&
+          subscription.lastReceiptPaymentId !== chargedPaymentId;
+
         await app.prisma.$transaction([
           app.prisma.subscription.update({
             where: { id: subscription.id },
@@ -372,6 +379,9 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
                     firstPaymentAt: new Date(),
                   }
                 : {}),
+              ...(shouldSendReceipt
+                ? { lastReceiptPaymentId: chargedPaymentId }
+                : {}),
             },
           }),
           app.prisma.user.update({
@@ -380,6 +390,52 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
           }),
         ]);
         app.log.info(logCtx, "Subscription charged, period extended");
+
+        if (shouldSendReceipt) {
+          try {
+            const user = await app.prisma.user.findUnique({
+              where: { id: subscription.userId },
+              select: { email: true, name: true },
+            });
+            const paymentEntity = payload.payload?.payment?.entity as
+              | {
+                  id: string;
+                  amount: number;
+                  currency: string;
+                  created_at?: number;
+                }
+              | undefined;
+            if (user?.email && paymentEntity) {
+              const finalPlanType = switchedPlanType ?? subscription.planType;
+              const planCfg = (() => {
+                try {
+                  return getPlanConfig(finalPlanType);
+                } catch {
+                  return null;
+                }
+              })();
+              await sendChargeReceiptEmail({
+                email: user.email,
+                customerName: user.name ?? "",
+                planLabel: planCfg?.label ?? finalPlanType,
+                amountPaise: paymentEntity.amount,
+                currency: paymentEntity.currency || "INR",
+                paymentId: paymentEntity.id,
+                periodStart,
+                periodEnd,
+                chargedAt: paymentEntity.created_at
+                  ? new Date(paymentEntity.created_at * 1000)
+                  : new Date(),
+              });
+              app.log.info(logCtx, "Receipt email sent");
+            }
+          } catch (err) {
+            app.log.error(
+              { ...logCtx, err },
+              "Failed to send receipt email (state already updated)"
+            );
+          }
+        }
         break;
       }
 

@@ -284,6 +284,105 @@ export async function sendInstitutionExpiryWarning(
   );
 }
 
+// India SaaS: 18% GST inclusive of the consumer-facing price.
+// We show a clean Net + GST split on receipts so the document doubles
+// as a tax invoice for B2C buyers and as a receipt for B2B claims.
+const GST_RATE = 0.18;
+
+function inclusiveBreakdown(grossPaise: number): {
+  netPaise: number;
+  gstPaise: number;
+} {
+  const netPaise = Math.round(grossPaise / (1 + GST_RATE));
+  const gstPaise = grossPaise - netPaise;
+  return { netPaise, gstPaise };
+}
+
+export interface ChargeReceiptInput {
+  email: string;
+  customerName: string;
+  planLabel: string;
+  amountPaise: number;
+  currency: string;
+  paymentId: string;
+  periodStart: Date | null;
+  periodEnd: Date | null;
+  chargedAt: Date;
+}
+
+export async function sendChargeReceiptEmail(input: ChargeReceiptInput) {
+  const {
+    email,
+    customerName,
+    planLabel,
+    amountPaise,
+    paymentId,
+    periodStart,
+    periodEnd,
+    chargedAt,
+  } = input;
+  const { netPaise, gstPaise } = inclusiveBreakdown(amountPaise);
+
+  const periodLine =
+    periodStart && periodEnd
+      ? `${formatHumanDate(periodStart)} — ${formatHumanDate(periodEnd)}`
+      : periodEnd
+        ? `Through ${formatHumanDate(periodEnd)}`
+        : "Current billing cycle";
+
+  const content = `
+    <h2 style="margin:0 0 8px;font-size:22px;color:#18181b;">Payment received</h2>
+    <p style="margin:0 0 24px;font-size:14px;color:#71717a;line-height:1.5;">
+      Tax invoice / receipt — <strong>${formatHumanDate(chargedAt)}</strong>
+    </p>
+    <p style="margin:0 0 16px;font-size:15px;color:#3f3f46;line-height:1.6;">
+      Hi ${customerName || "there"}, your <strong>${planLabel}</strong> Lex AI subscription
+      was charged successfully. Thanks for being a member.
+    </p>
+
+    <table width="100%" cellpadding="0" cellspacing="0" style="margin:24px 0;border-collapse:collapse;font-size:14px;color:#3f3f46;">
+      <tr>
+        <td style="padding:8px 0;border-bottom:1px solid #e4e4e7;color:#71717a;">Plan</td>
+        <td style="padding:8px 0;border-bottom:1px solid #e4e4e7;text-align:right;color:#18181b;">${planLabel}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 0;border-bottom:1px solid #e4e4e7;color:#71717a;">Billing period</td>
+        <td style="padding:8px 0;border-bottom:1px solid #e4e4e7;text-align:right;color:#18181b;">${periodLine}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 0;border-bottom:1px solid #e4e4e7;color:#71717a;">Net amount</td>
+        <td style="padding:8px 0;border-bottom:1px solid #e4e4e7;text-align:right;color:#18181b;">${formatRupees(netPaise)}</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 0;border-bottom:1px solid #e4e4e7;color:#71717a;">GST (18%)</td>
+        <td style="padding:8px 0;border-bottom:1px solid #e4e4e7;text-align:right;color:#18181b;">${formatRupees(gstPaise)}</td>
+      </tr>
+      <tr>
+        <td style="padding:12px 0;color:#18181b;font-weight:600;">Total paid</td>
+        <td style="padding:12px 0;text-align:right;color:#18181b;font-weight:600;">${formatRupees(amountPaise)}</td>
+      </tr>
+    </table>
+
+    <p style="margin:0 0 8px;font-size:13px;color:#71717a;line-height:1.5;">
+      Payment reference: <code style="background:#f4f4f5;padding:2px 6px;border-radius:4px;">${paymentId}</code>
+    </p>
+    <p style="margin:0 0 24px;font-size:13px;color:#71717a;line-height:1.5;">
+      Billed by Lex AI Technologies Pvt Ltd, Gurugram, Haryana.
+      For B2B GST credit, reply to this email with your GSTIN and we'll
+      send a re-issued tax invoice.
+    </p>
+    <p style="margin:0 0 4px;font-size:13px;color:#71717a;line-height:1.5;">
+      Manage your subscription anytime at
+      <a href="${FRONTEND_URL}/account" style="color:#2563eb;">${FRONTEND_URL}/account</a>.
+    </p>`;
+
+  await sendEmail(
+    email,
+    `Receipt: ${planLabel} — ${formatRupees(amountPaise)} — Lex AI`,
+    wrapHtml(content)
+  );
+}
+
 export async function sendPaymentFailedEmail(
   email: string,
   planLabel: string,

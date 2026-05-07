@@ -9,6 +9,7 @@ import {
   verifySubscriptionSignature,
   refundPayment,
   updateSubscriptionPlan,
+  fetchSubscription,
 } from "../../lib/razorpay.js";
 import { sendRefundIssuedEmail } from "../../lib/email.js";
 
@@ -292,6 +293,7 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
       where: { userId },
       orderBy: { createdAt: "desc" },
       select: {
+        id: true,
         planType: true,
         status: true,
         currentPeriodStart: true,
@@ -304,6 +306,7 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
         refundAmount: true,
         pendingPlanType: true,
         pendingPlanChangeAt: true,
+        shortUrl: true,
       },
     });
 
@@ -339,6 +342,74 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
       },
     });
   });
+
+  // POST /subscriptions/payment-method-link
+  // Returns the Razorpay-hosted authorization URL the user can visit to
+  // re-authenticate their mandate (e.g. after a card decline). Razorpay's
+  // own `short_url` is the canonical surface for this; we re-fetch from
+  // Razorpay if our local copy is missing or stale, then return it.
+  app.post(
+    "/payment-method-link",
+    {
+      preHandler: [authenticate],
+      config: {
+        rateLimit: { max: 6, timeWindow: "1 minute" },
+      },
+    },
+    async (request, reply) => {
+      const userId = request.currentUser!.userId;
+      const subscription = await app.prisma.subscription.findFirst({
+        where: {
+          userId,
+          status: { in: ["AUTHENTICATED", "ACTIVE", "PENDING", "HALTED", "CREATED"] },
+          refundedAt: null,
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+      if (!subscription) {
+        return reply.status(404).send({
+          error:
+            "No subscription found. Subscribe first if you'd like to set up auto-pay.",
+        });
+      }
+
+      let shortUrl = subscription.shortUrl;
+
+      if (!shortUrl) {
+        try {
+          const remote = (await fetchSubscription(
+            subscription.razorpaySubscriptionId
+          )) as { short_url?: string | null };
+          if (remote?.short_url) {
+            shortUrl = remote.short_url;
+            await app.prisma.subscription.update({
+              where: { id: subscription.id },
+              data: { shortUrl },
+            });
+          }
+        } catch (err) {
+          app.log.error(
+            { userId, subscriptionId: subscription.id, err },
+            "Failed to refresh short_url from Razorpay"
+          );
+        }
+      }
+
+      if (!shortUrl) {
+        return reply.status(502).send({
+          error:
+            "Could not retrieve a payment-method update link right now. Please try again or contact support.",
+        });
+      }
+
+      return reply.send({
+        success: true,
+        url: shortUrl,
+        subscriptionStatus: subscription.status,
+      });
+    }
+  );
 
   // POST /subscriptions/cancel-created — cleanup when user dismisses Razorpay popup
   app.post(

@@ -221,7 +221,88 @@ export default async function usersDirectoryRoutes(app: FastifyInstance) {
       return reply.send({ success: true, user: updated });
     }
   );
+
+  // PATCH /admin/users/:id/suspend — Suspend or reinstate a user.
+  // Body: { isActive: boolean, reason: string }
+  // The auth hook already rejects suspended users on login/refresh
+  // (login.ts:50, refresh.ts:47, google.ts:99). On suspend we also
+  // revoke refresh tokens so any stale session collapses on next
+  // refresh, ≤15 minutes after the click.
+  app.patch<{ Params: { id: string } }>(
+    "/users/:id/suspend",
+    {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const parsed = suspendSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: "Validation failed",
+          details: parsed.error.flatten().fieldErrors,
+        });
+      }
+
+      const { isActive, reason } = parsed.data;
+
+      const user = await app.prisma.user.findUnique({
+        where: { id: request.params.id },
+        select: { id: true, email: true, role: true, isActive: true },
+      });
+      if (!user) {
+        return reply.status(404).send({ error: "User not found" });
+      }
+
+      // Refuse to suspend an admin via this endpoint — protects against
+      // an admin locking themselves out and against ops misclicks.
+      if (user.role === "ADMIN" && !isActive) {
+        return reply.status(400).send({
+          error:
+            "Admins cannot be suspended via this endpoint. Demote the role first.",
+        });
+      }
+
+      if (user.isActive === isActive) {
+        return reply.send({
+          success: true,
+          unchanged: true,
+          user: { id: user.id, isActive: user.isActive },
+        });
+      }
+
+      const updated = await app.prisma.user.update({
+        where: { id: user.id },
+        data: { isActive },
+        select: { id: true, email: true, isActive: true },
+      });
+
+      if (!isActive) {
+        await revokeAllUserTokens(app.prisma, user.id);
+      }
+
+      await recordAdminAction({
+        prisma: app.prisma,
+        actor: request.currentUser!,
+        action: isActive ? "USER_REINSTATE" : "USER_SUSPEND",
+        entityType: "USER",
+        entityId: user.id,
+        metadata: {
+          targetEmail: user.email,
+          previousIsActive: user.isActive,
+          newIsActive: isActive,
+          reason,
+        },
+        log: request.log,
+      });
+
+      return reply.send({ success: true, user: updated });
+    }
+  );
 }
+
+const suspendSchema = z.object({
+  isActive: z.boolean(),
+  reason: z.string().min(3, "Reason is required").max(500),
+});
 
 const premiumGrantSchema = z
   .object({

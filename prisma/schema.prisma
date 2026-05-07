@@ -230,6 +230,9 @@ model Subscription {
   // Set to the currentPeriodEnd that failed; if it matches on a re-fired
   // pending webhook, we skip. Cleared on successful subscription.charged.
   dunningSentForPeriodEnd DateTime?
+  // Receipt idempotency. Set to the Razorpay payment_id we last
+  // emailed a receipt for; webhook replays for the same payment skip.
+  lastReceiptPaymentId   String?
   createdAt              DateTime           @default(now())
   updatedAt              DateTime           @updatedAt
 

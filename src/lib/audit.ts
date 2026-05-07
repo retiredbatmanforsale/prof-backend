@@ -11,7 +11,9 @@ export type AdminAction =
   | "MEMBER_REVOKE"
   | "MEMBER_REINSTATE"
   | "PREMIUM_GRANT"
-  | "PREMIUM_REVOKE";
+  | "PREMIUM_REVOKE"
+  | "USER_SUSPEND"
+  | "USER_REINSTATE";
 
 export type AdminEntityType =
   | "ORGANIZATION"
