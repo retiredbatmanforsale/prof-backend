@@ -4,6 +4,10 @@ import { z } from "zod";
 import { getAllPlanConfigs } from "../../lib/plans.js";
 import { recordAdminAction } from "../../lib/audit.js";
 import { revokeAllUserTokens } from "../../lib/session.js";
+import {
+  cancelActiveRazorpaySubscription,
+  type AdminCancelResult,
+} from "../../lib/subscription-cancel.js";
 
 const MAX_PAGE_SIZE = 200;
 const DEFAULT_PAGE_SIZE = 50;
@@ -193,10 +197,35 @@ export default async function usersDirectoryRoutes(app: FastifyInstance) {
         },
       });
 
-      // On revoke, kill refresh tokens so any cached "premium" JWT can't
-      // outlive the change beyond the 15-minute access token TTL.
+      // On revoke, kill refresh tokens AND auto-cancel any active
+      // Razorpay subscription so future auto-debits don't keep firing
+      // against a user we just locked out. Without this, "Revoke" was
+      // a real-money bug: user loses access AND keeps paying monthly.
+      let cancelResult: AdminCancelResult | null = null;
       if (!isPremium) {
         await revokeAllUserTokens(app.prisma, user.id);
+        cancelResult = await cancelActiveRazorpaySubscription(
+          app.prisma,
+          user.id,
+          request.log
+        );
+        if (cancelResult.cancelled) {
+          await recordAdminAction({
+            prisma: app.prisma,
+            actor: request.currentUser!,
+            action: "SUBSCRIPTION_CANCEL",
+            entityType: "USER",
+            entityId: user.id,
+            metadata: {
+              targetEmail: user.email,
+              razorpaySubscriptionId: cancelResult.razorpaySubscriptionId,
+              triggeredBy: "PREMIUM_REVOKE",
+              cancelMode: "cycle_end",
+              reason,
+            },
+            log: request.log,
+          });
+        }
       }
 
       await recordAdminAction({
@@ -214,11 +243,16 @@ export default async function usersDirectoryRoutes(app: FastifyInstance) {
             premiumGrantReason: updated.premiumGrantReason,
           },
           reason,
+          subscriptionCancel: cancelResult,
         },
         log: request.log,
       });
 
-      return reply.send({ success: true, user: updated });
+      return reply.send({
+        success: true,
+        user: updated,
+        subscriptionCancel: cancelResult,
+      });
     }
   );
 
@@ -275,8 +309,35 @@ export default async function usersDirectoryRoutes(app: FastifyInstance) {
         select: { id: true, email: true, isActive: true },
       });
 
+      // On suspend, kill tokens AND auto-cancel any active Razorpay
+      // subscription. A suspended user can't log in to cancel
+      // themselves; without this, their card would keep getting
+      // debited for a service they cannot use.
+      let cancelResult: AdminCancelResult | null = null;
       if (!isActive) {
         await revokeAllUserTokens(app.prisma, user.id);
+        cancelResult = await cancelActiveRazorpaySubscription(
+          app.prisma,
+          user.id,
+          request.log
+        );
+        if (cancelResult.cancelled) {
+          await recordAdminAction({
+            prisma: app.prisma,
+            actor: request.currentUser!,
+            action: "SUBSCRIPTION_CANCEL",
+            entityType: "USER",
+            entityId: user.id,
+            metadata: {
+              targetEmail: user.email,
+              razorpaySubscriptionId: cancelResult.razorpaySubscriptionId,
+              triggeredBy: "USER_SUSPEND",
+              cancelMode: "cycle_end",
+              reason,
+            },
+            log: request.log,
+          });
+        }
       }
 
       await recordAdminAction({
@@ -290,11 +351,80 @@ export default async function usersDirectoryRoutes(app: FastifyInstance) {
           previousIsActive: user.isActive,
           newIsActive: isActive,
           reason,
+          subscriptionCancel: cancelResult,
         },
         log: request.log,
       });
 
-      return reply.send({ success: true, user: updated });
+      return reply.send({
+        success: true,
+        user: updated,
+        subscriptionCancel: cancelResult,
+      });
+    }
+  );
+
+  // POST /admin/users/:id/cancel-subscription — Standalone subscription
+  // cancel for cases where ops wants to stop future charges without
+  // touching premium / suspension state. Useful for moving a paying
+  // user onto a comp arrangement (e.g. partner deal) — cancel the
+  // Razorpay sub here, then grant a comp via /premium.
+  app.post<{ Params: { id: string }; Body: { reason?: string } }>(
+    "/users/:id/cancel-subscription",
+    {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const reason = (request.body?.reason ?? "").trim();
+      if (reason.length < 3) {
+        return reply.status(400).send({
+          error: "Reason is required (min 3 chars)",
+        });
+      }
+
+      const user = await app.prisma.user.findUnique({
+        where: { id: request.params.id },
+        select: { id: true, email: true },
+      });
+      if (!user) {
+        return reply.status(404).send({ error: "User not found" });
+      }
+
+      const cancelResult = await cancelActiveRazorpaySubscription(
+        app.prisma,
+        user.id,
+        request.log
+      );
+
+      if (!cancelResult.cancelled) {
+        return reply.status(400).send({
+          error:
+            cancelResult.reason === "no_active_subscription"
+              ? "No active subscription to cancel."
+              : cancelResult.reason === "already_cancelled"
+                ? "This subscription is already cancelled."
+                : `Razorpay cancel failed: ${cancelResult.error ?? "unknown error"}`,
+          subscriptionCancel: cancelResult,
+        });
+      }
+
+      await recordAdminAction({
+        prisma: app.prisma,
+        actor: request.currentUser!,
+        action: "SUBSCRIPTION_CANCEL",
+        entityType: "USER",
+        entityId: user.id,
+        metadata: {
+          targetEmail: user.email,
+          razorpaySubscriptionId: cancelResult.razorpaySubscriptionId,
+          triggeredBy: "STANDALONE",
+          cancelMode: "cycle_end",
+          reason,
+        },
+        log: request.log,
+      });
+
+      return reply.send({ success: true, subscriptionCancel: cancelResult });
     }
   );
 }

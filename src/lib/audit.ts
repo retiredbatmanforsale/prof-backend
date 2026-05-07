@@ -13,7 +13,8 @@ export type AdminAction =
   | "PREMIUM_GRANT"
   | "PREMIUM_REVOKE"
   | "USER_SUSPEND"
-  | "USER_REINSTATE";
+  | "USER_REINSTATE"
+  | "SUBSCRIPTION_CANCEL";
 
 export type AdminEntityType =
   | "ORGANIZATION"
