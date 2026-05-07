@@ -9,12 +9,15 @@ export type AdminAction =
   | "STUDENT_BULK_ADD"
   | "STUDENT_REMOVE"
   | "MEMBER_REVOKE"
-  | "MEMBER_REINSTATE";
+  | "MEMBER_REINSTATE"
+  | "PREMIUM_GRANT"
+  | "PREMIUM_REVOKE";
 
 export type AdminEntityType =
   | "ORGANIZATION"
   | "PRELOADED_STUDENT"
-  | "ORGANIZATION_MEMBER";
+  | "ORGANIZATION_MEMBER"
+  | "USER";
 
 export interface RecordAdminActionInput {
   prisma: PrismaClient;

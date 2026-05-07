@@ -8,6 +8,7 @@ import {
   createCustomer,
   verifySubscriptionSignature,
   refundPayment,
+  updateSubscriptionPlan,
 } from "../../lib/razorpay.js";
 import { sendRefundIssuedEmail } from "../../lib/email.js";
 
@@ -301,6 +302,8 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
         refundedAt: true,
         refundStatus: true,
         refundAmount: true,
+        pendingPlanType: true,
+        pendingPlanChangeAt: true,
       },
     });
 
@@ -331,6 +334,8 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
         refundAmount: subscription.refundAmount,
         isRefundEligible,
         refundEligibleUntil,
+        pendingPlanType: subscription.pendingPlanType,
+        pendingPlanChangeAt: subscription.pendingPlanChangeAt,
       },
     });
   });
@@ -376,6 +381,116 @@ export default async function subscriptionRoutes(app: FastifyInstance) {
       });
 
       return reply.send({ success: true });
+    }
+  );
+
+  // POST /subscriptions/switch-plan
+  // Switch a user's active subscription to a different plan (e.g. Monthly
+  // → Yearly). The change is scheduled at the current cycle end so the
+  // user keeps continuous access through the period they've already paid
+  // for, and Razorpay charges the new plan amount on the next renewal.
+  // Body: { targetPlan: "MONTHLY" | "QUARTERLY" | "YEARLY" }
+  app.post<{ Body: { targetPlan?: string } }>(
+    "/switch-plan",
+    {
+      preHandler: [authenticate],
+      config: {
+        rateLimit: { max: 5, timeWindow: "1 minute" },
+      },
+    },
+    async (request, reply) => {
+      const userId = request.currentUser!.userId;
+      const targetPlan = request.body?.targetPlan as PlanType | undefined;
+
+      if (
+        !targetPlan ||
+        !["MONTHLY", "QUARTERLY", "YEARLY"].includes(targetPlan)
+      ) {
+        return reply.status(400).send({
+          error: "targetPlan must be one of MONTHLY, QUARTERLY, YEARLY",
+        });
+      }
+
+      const subscription = await app.prisma.subscription.findFirst({
+        where: {
+          userId,
+          status: { in: ["ACTIVE", "AUTHENTICATED"] },
+          refundedAt: null,
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+      if (!subscription) {
+        return reply.status(404).send({
+          error: "No active subscription found to switch.",
+        });
+      }
+
+      if (subscription.cancelledAt) {
+        return reply.status(400).send({
+          error:
+            "Your subscription is already scheduled to cancel. Reactivate before switching plans.",
+        });
+      }
+
+      if (subscription.planType === targetPlan) {
+        return reply.status(400).send({
+          error: `You're already on the ${targetPlan.toLowerCase()} plan.`,
+        });
+      }
+
+      if (
+        subscription.pendingPlanType &&
+        subscription.pendingPlanType === targetPlan
+      ) {
+        return reply.send({
+          success: true,
+          alreadyScheduled: true,
+          message: `Switch to ${targetPlan.toLowerCase()} is already scheduled for the next billing date.`,
+          currentPeriodEnd: subscription.currentPeriodEnd,
+        });
+      }
+
+      const targetConfig = getPlanConfig(targetPlan);
+      if (!targetConfig.razorpayPlanId) {
+        return reply.status(500).send({
+          error: "Target plan is not configured. Contact support.",
+        });
+      }
+
+      try {
+        await updateSubscriptionPlan(
+          subscription.razorpaySubscriptionId,
+          targetConfig.razorpayPlanId,
+          1
+        );
+      } catch (err: unknown) {
+        const message =
+          err instanceof Error ? err.message : "Razorpay update failed";
+        app.log.error(
+          { userId, subscriptionId: subscription.id, targetPlan, err },
+          "Plan switch failed at Razorpay"
+        );
+        return reply.status(502).send({
+          error: `Plan switch could not be scheduled: ${message}. Please try again or contact support.`,
+        });
+      }
+
+      await app.prisma.subscription.update({
+        where: { id: subscription.id },
+        data: {
+          pendingPlanType: targetPlan,
+          pendingPlanChangeAt: subscription.currentPeriodEnd ?? null,
+        },
+      });
+
+      return reply.send({
+        success: true,
+        message: `You'll switch to the ${targetPlan.toLowerCase()} plan on your next billing date.`,
+        effectiveAt: subscription.currentPeriodEnd,
+        currentPlan: subscription.planType,
+        targetPlan,
+      });
     }
   );
 

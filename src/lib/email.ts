@@ -284,6 +284,44 @@ export async function sendInstitutionExpiryWarning(
   );
 }
 
+export async function sendPaymentFailedEmail(
+  email: string,
+  planLabel: string,
+  retryDeadline?: Date | null
+) {
+  const accountUrl = `${FRONTEND_URL}/account`;
+  const deadlineLine = retryDeadline
+    ? `<p style="margin:0 0 16px;font-size:15px;color:#3f3f46;line-height:1.6;">
+        Razorpay will keep retrying for a few days. If the charge still fails by
+        <strong>${formatHumanDate(retryDeadline)}</strong>, your access to
+        Lex AI courses will pause until you update your payment method.
+       </p>`
+    : "";
+
+  const content = `
+    <h2 style="margin:0 0 16px;font-size:22px;color:#18181b;">We couldn't process your payment</h2>
+    <p style="margin:0 0 16px;font-size:15px;color:#3f3f46;line-height:1.6;">
+      We tried to collect your scheduled <strong>${planLabel}</strong> charge for Lex AI
+      and your bank declined it — most often because the card on file expired,
+      hit a limit, or needs a fresh OTP / mandate confirmation.
+    </p>
+    ${deadlineLine}
+    <a href="${accountUrl}" style="display:inline-block;padding:12px 32px;background-color:#2563eb;color:#ffffff;text-decoration:none;border-radius:6px;font-size:15px;font-weight:500;">
+      Update payment method
+    </a>
+    <p style="margin:24px 0 0;font-size:13px;color:#71717a;line-height:1.5;">
+      If you've already updated your card or just need a few days, you can
+      ignore this — Razorpay will retry on its own and you'll get a receipt
+      when the next charge succeeds.
+    </p>`;
+
+  await sendEmail(
+    email,
+    "Action needed: payment failed for your Lex AI subscription",
+    wrapHtml(content)
+  );
+}
+
 export async function sendNoPasswordEmail(email: string) {
   const content = `
     <h2 style="margin:0 0 16px;font-size:22px;color:#18181b;">Password Reset Request</h2>

@@ -16,8 +16,10 @@ export async function getAccessInfo(
 }> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { isPremium: true },
+    select: { isPremium: true, premiumEndsAt: true },
   });
+
+  const now = new Date();
 
   if (user?.isPremium) {
     // Check if user has an active subscription
@@ -33,29 +35,50 @@ export async function getAccessInfo(
       // Has an active subscription — check if within billing period
       if (
         activeSubscription.currentPeriodEnd &&
-        activeSubscription.currentPeriodEnd < new Date()
+        activeSubscription.currentPeriodEnd < now
       ) {
-        // Period expired (webhook missed) — check for legacy one-time payments before revoking
+        // Period expired (webhook missed) — check for fallbacks before revoking.
+        // Order: legacy one-time payment > admin comp grant.
         const hasLegacyPayment = await hasLegacyOneTimePayment(prisma, userId);
         if (hasLegacyPayment) {
           return { hasAccess: true, accessType: "premium", organizationName: null };
         }
-        // No legacy payment — revoke access
+        if (
+          user.premiumEndsAt === null ||
+          (user.premiumEndsAt && user.premiumEndsAt > now)
+        ) {
+          // Active admin comp (lifetime if null end date, otherwise still in window).
+          // Only honor null when we know premiumEndsAt was deliberately set null;
+          // legacy users (pre-comp) also have null here, but the legacy check above
+          // already filtered them out.
+          return { hasAccess: true, accessType: "premium", organizationName: null };
+        }
+        // No legacy payment, no live comp — revoke access
         await prisma.user.update({
           where: { id: userId },
-          data: { isPremium: false },
+          data: { isPremium: false, premiumEndsAt: null },
         });
         // Fall through to institution check
       } else {
         return { hasAccess: true, accessType: "subscription", organizationName: null };
       }
     } else {
-      // isPremium but no active subscription — legacy one-time premium user
-      return { hasAccess: true, accessType: "premium", organizationName: null };
+      // isPremium but no active subscription. Could be:
+      //  (a) legacy one-time payer
+      //  (b) admin comp (with or without end date)
+      // Treat (b) as expired if premiumEndsAt is set and in the past.
+      if (user.premiumEndsAt && user.premiumEndsAt < now) {
+        await prisma.user.update({
+          where: { id: userId },
+          data: { isPremium: false, premiumEndsAt: null },
+        });
+        // Fall through to institution check
+      } else {
+        return { hasAccess: true, accessType: "premium", organizationName: null };
+      }
     }
   }
 
-  const now = new Date();
   const membership = await prisma.organizationMember.findFirst({
     where: {
       userId,

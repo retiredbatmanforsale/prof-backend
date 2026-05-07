@@ -117,6 +117,37 @@ export async function cancelSubscription(
   return getRazorpay().subscriptions.cancel(subscriptionId, cancelAtCycleEnd);
 }
 
+// Schedule a plan change on an existing subscription. We always schedule
+// the switch at cycle_end so the user keeps continuous access through
+// the period they've already paid for, and the new plan kicks in on the
+// next billing date. Razorpay will fire `subscription.charged` against
+// the new plan_id at that boundary.
+export async function updateSubscriptionPlan(
+  subscriptionId: string,
+  newPlanId: string,
+  customerNotify: 0 | 1 = 1
+): Promise<unknown> {
+  // The Razorpay Node SDK's subscriptions.update signature isn't typed
+  // for `schedule_change_at`, so we call it through `any` to pass the
+  // documented payload through. Behaviour is verified end-to-end via
+  // the subscription.charged webhook reflecting the new plan.
+  const subs = getRazorpay().subscriptions as unknown as {
+    update: (
+      id: string,
+      body: {
+        plan_id: string;
+        schedule_change_at: "now" | "cycle_end";
+        customer_notify: 0 | 1;
+      }
+    ) => Promise<unknown>;
+  };
+  return subs.update(subscriptionId, {
+    plan_id: newPlanId,
+    schedule_change_at: "cycle_end",
+    customer_notify: customerNotify,
+  });
+}
+
 export async function refundPayment(
   paymentId: string,
   amount?: number,

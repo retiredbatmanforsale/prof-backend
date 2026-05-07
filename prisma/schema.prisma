@@ -45,6 +45,12 @@ model User {
   role           Role      @default(USER)
   isActive       Boolean   @default(true)
   isPremium      Boolean   @default(false)
+  // Admin-granted comp expiry. Null means "no comp" or "lifetime comp"
+  // (the two cases are distinguished by isPremium + the absence of a
+  // Subscription / legacy Payment row). When set and in the past,
+  // getAccessInfo auto-revokes isPremium on the next refresh.
+  premiumEndsAt  DateTime?
+  premiumGrantReason String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -214,6 +220,16 @@ model Subscription {
   refundedAt             DateTime?
   refundStatus           String?
   refundAmount           Int?
+  // Plan-switch state. Set when the user requests a Monthly→Yearly (or
+  // any plan-to-plan) change via /subscriptions/switch-plan; cleared
+  // when the next subscription.charged webhook reflects the new plan.
+  // Razorpay applies the switch at cycle end so continuity is preserved.
+  pendingPlanType        PlanType?
+  pendingPlanChangeAt    DateTime?
+  // Dunning idempotency. We email the user once per failed-charge cycle.
+  // Set to the currentPeriodEnd that failed; if it matches on a re-fired
+  // pending webhook, we skip. Cleared on successful subscription.charged.
+  dunningSentForPeriodEnd DateTime?
   createdAt              DateTime           @default(now())
   updatedAt              DateTime           @updatedAt
 

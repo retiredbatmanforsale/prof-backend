@@ -1,6 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import type { PlanType, Prisma } from "@prisma/client";
+import { z } from "zod";
 import { getAllPlanConfigs } from "../../lib/plans.js";
+import { recordAdminAction } from "../../lib/audit.js";
+import { revokeAllUserTokens } from "../../lib/session.js";
 
 const MAX_PAGE_SIZE = 200;
 const DEFAULT_PAGE_SIZE = 50;
@@ -60,7 +63,181 @@ export default async function usersDirectoryRoutes(app: FastifyInstance) {
       return await listFree(app, { searchFilter, limit, offset, now }, reply);
     }
   );
+
+  // GET /admin/users/:id — full user detail for ops, including the
+  // bits we need to render the premium-comp panel (current isPremium
+  // state, comp end date, latest subscription period end).
+  app.get<{ Params: { id: string } }>(
+    "/users/:id",
+    {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const user = await app.prisma.user.findUnique({
+        where: { id: request.params.id },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          phone: true,
+          role: true,
+          isActive: true,
+          isPremium: true,
+          premiumEndsAt: true,
+          premiumGrantReason: true,
+          createdAt: true,
+          subscriptions: {
+            orderBy: { createdAt: "desc" },
+            take: 5,
+            select: {
+              id: true,
+              planType: true,
+              status: true,
+              currentPeriodStart: true,
+              currentPeriodEnd: true,
+              cancelledAt: true,
+              endedAt: true,
+              pendingPlanType: true,
+              pendingPlanChangeAt: true,
+              refundedAt: true,
+              refundStatus: true,
+              createdAt: true,
+            },
+          },
+          organizationMembers: {
+            select: {
+              id: true,
+              isActive: true,
+              isVerified: true,
+              organization: {
+                select: { id: true, name: true, slug: true, accessEndDate: true },
+              },
+            },
+          },
+        },
+      });
+
+      if (!user) {
+        return reply.status(404).send({ error: "User not found" });
+      }
+
+      return reply.send({ user });
+    }
+  );
+
+  // PATCH /admin/users/:id/premium — Grant or revoke premium access.
+  // Body: { isPremium: boolean, endsAt?: ISO string | null, reason: string }
+  // - On grant: sets isPremium=true and premiumEndsAt to the given date
+  //   (null = lifetime comp). Reason is required for the audit log.
+  // - On revoke: sets isPremium=false, clears premiumEndsAt, kills the
+  //   user's refresh tokens so access collapses on next JWT refresh.
+  // Coexists with subscriptions: if the user has an active sub, the
+  // sub still governs day-to-day access; the comp is a fallback after
+  // the sub period ends or when no sub exists.
+  app.patch<{ Params: { id: string } }>(
+    "/users/:id/premium",
+    {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const parsed = premiumGrantSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: "Validation failed",
+          details: parsed.error.flatten().fieldErrors,
+        });
+      }
+
+      const user = await app.prisma.user.findUnique({
+        where: { id: request.params.id },
+        select: {
+          id: true,
+          email: true,
+          isPremium: true,
+          premiumEndsAt: true,
+          premiumGrantReason: true,
+        },
+      });
+      if (!user) {
+        return reply.status(404).send({ error: "User not found" });
+      }
+
+      const { isPremium, endsAt, reason } = parsed.data;
+      const previous = {
+        isPremium: user.isPremium,
+        premiumEndsAt: user.premiumEndsAt,
+        premiumGrantReason: user.premiumGrantReason,
+      };
+
+      const data: Prisma.UserUpdateInput = isPremium
+        ? {
+            isPremium: true,
+            premiumEndsAt: endsAt ? new Date(endsAt) : null,
+            premiumGrantReason: reason,
+          }
+        : {
+            isPremium: false,
+            premiumEndsAt: null,
+            premiumGrantReason: reason,
+          };
+
+      const updated = await app.prisma.user.update({
+        where: { id: user.id },
+        data,
+        select: {
+          id: true,
+          email: true,
+          isPremium: true,
+          premiumEndsAt: true,
+          premiumGrantReason: true,
+        },
+      });
+
+      // On revoke, kill refresh tokens so any cached "premium" JWT can't
+      // outlive the change beyond the 15-minute access token TTL.
+      if (!isPremium) {
+        await revokeAllUserTokens(app.prisma, user.id);
+      }
+
+      await recordAdminAction({
+        prisma: app.prisma,
+        actor: request.currentUser!,
+        action: isPremium ? "PREMIUM_GRANT" : "PREMIUM_REVOKE",
+        entityType: "USER",
+        entityId: user.id,
+        metadata: {
+          targetEmail: user.email,
+          previous,
+          next: {
+            isPremium: updated.isPremium,
+            premiumEndsAt: updated.premiumEndsAt?.toISOString() ?? null,
+            premiumGrantReason: updated.premiumGrantReason,
+          },
+          reason,
+        },
+        log: request.log,
+      });
+
+      return reply.send({ success: true, user: updated });
+    }
+  );
 }
+
+const premiumGrantSchema = z
+  .object({
+    isPremium: z.boolean(),
+    endsAt: z.string().datetime().nullish(),
+    reason: z.string().min(3, "Reason is required").max(500),
+  })
+  .refine(
+    (data) => {
+      if (data.isPremium && data.endsAt) {
+        return new Date(data.endsAt) > new Date();
+      }
+      return true;
+    },
+    { message: "End date must be in the future", path: ["endsAt"] }
+  );
 
 interface ListArgs {
   searchFilter: Prisma.UserWhereInput | null;

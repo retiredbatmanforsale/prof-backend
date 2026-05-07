@@ -1,9 +1,18 @@
 import type { FastifyInstance } from "fastify";
 import { verifyWebhookSignatureFn } from "../../lib/razorpay.js";
+import { getPlanConfig } from "../../lib/plans.js";
 import {
   sendRefundProcessedEmail,
   sendRefundFailedSupportAlert,
+  sendPaymentFailedEmail,
 } from "../../lib/email.js";
+
+function planLabel(planType: string): string {
+  if (planType === "MONTHLY") return "monthly";
+  if (planType === "QUARTERLY") return "quarterly";
+  if (planType === "YEARLY") return "yearly";
+  return planType.toLowerCase();
+}
 
 export default async function razorpayWebhookRoute(app: FastifyInstance) {
   // Override JSON parser to capture raw body for signature verification
@@ -320,6 +329,26 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
         const shouldSetFirstPayment =
           !subscription.firstPaymentId && !!chargedPaymentId;
 
+        // Detect a completed plan switch: if the user scheduled a
+        // Monthly→Yearly change last cycle, Razorpay now charges against
+        // the new plan and reports its plan_id on the entity. When that
+        // matches our local pendingPlanType, lock in the change.
+        const chargedPlanId = subEntity.plan_id as string | undefined;
+        let switchedPlanType: typeof subscription.planType | null = null;
+        if (chargedPlanId && subscription.pendingPlanType) {
+          let pendingPlanRzpId: string | null = null;
+          try {
+            pendingPlanRzpId = getPlanConfig(
+              subscription.pendingPlanType
+            ).razorpayPlanId;
+          } catch {
+            pendingPlanRzpId = null;
+          }
+          if (pendingPlanRzpId && pendingPlanRzpId === chargedPlanId) {
+            switchedPlanType = subscription.pendingPlanType;
+          }
+        }
+
         await app.prisma.$transaction([
           app.prisma.subscription.update({
             where: { id: subscription.id },
@@ -327,6 +356,16 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
               status: "ACTIVE",
               currentPeriodStart: periodStart,
               currentPeriodEnd: periodEnd,
+              // Clear dunning marker so a future failed charge re-arms
+              // a dunning email instead of being silently suppressed.
+              dunningSentForPeriodEnd: null,
+              ...(switchedPlanType
+                ? {
+                    planType: switchedPlanType,
+                    pendingPlanType: null,
+                    pendingPlanChangeAt: null,
+                  }
+                : {}),
               ...(shouldSetFirstPayment
                 ? {
                     firstPaymentId: chargedPaymentId,
@@ -345,12 +384,52 @@ export default async function razorpayWebhookRoute(app: FastifyInstance) {
       }
 
       case "subscription.pending": {
+        // Send a dunning email at most once per failed-charge cycle.
+        // We use the period that failed (subscription.currentPeriodEnd at
+        // the moment the webhook fires) as the idempotency key — if a
+        // charge fails twice in the same cycle we only mail once; once
+        // the next renewal succeeds we clear the marker so a future
+        // failure mails again.
+        const failedPeriodEnd = subscription.currentPeriodEnd;
+        const alreadySent =
+          subscription.dunningSentForPeriodEnd &&
+          failedPeriodEnd &&
+          subscription.dunningSentForPeriodEnd.getTime() ===
+            failedPeriodEnd.getTime();
+
         await app.prisma.subscription.update({
           where: { id: subscription.id },
-          data: { status: "PENDING" },
+          data: {
+            status: "PENDING",
+            ...(alreadySent || !failedPeriodEnd
+              ? {}
+              : { dunningSentForPeriodEnd: failedPeriodEnd }),
+          },
         });
         app.log.warn(logCtx, "Subscription entered pending state, payment retry window open");
         // Keep isPremium true — payment retry window
+
+        if (!alreadySent) {
+          try {
+            const user = await app.prisma.user.findUnique({
+              where: { id: subscription.userId },
+              select: { email: true },
+            });
+            if (user?.email) {
+              await sendPaymentFailedEmail(
+                user.email,
+                planLabel(subscription.planType),
+                failedPeriodEnd
+              );
+              app.log.info(logCtx, "Dunning email sent");
+            }
+          } catch (err) {
+            app.log.error(
+              { ...logCtx, err },
+              "Failed to send dunning email (state already updated)"
+            );
+          }
+        }
         break;
       }
 
