@@ -237,6 +237,53 @@ export async function sendRefundFailedSupportAlert(
   await sendEmail("support@lexailabs.com", `[ALERT] Refund failed for ${userEmail}`, wrapHtml(content));
 }
 
+function formatHumanDate(date: Date): string {
+  return date.toLocaleDateString("en-IN", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
+
+export async function sendInstitutionExpiryWarning(
+  email: string,
+  organizationName: string,
+  endDate: Date,
+  daysRemaining: number
+) {
+  const subscribeUrl = `${FRONTEND_URL}/subscribe`;
+  const heading =
+    daysRemaining <= 1
+      ? `Your ${organizationName} access ends ${daysRemaining === 0 ? "today" : "tomorrow"}`
+      : `Your ${organizationName} access ends in ${daysRemaining} days`;
+
+  const content = `
+    <h2 style="margin:0 0 16px;font-size:22px;color:#18181b;">${heading}</h2>
+    <p style="margin:0 0 16px;font-size:15px;color:#3f3f46;line-height:1.6;">
+      Heads up — your access to Lex AI courses through <strong>${organizationName}</strong>
+      is scheduled to end on <strong>${formatHumanDate(endDate)}</strong>.
+    </p>
+    <p style="margin:0 0 24px;font-size:15px;color:#3f3f46;line-height:1.6;">
+      If you'd like uninterrupted access to every course on Prof, you can pick a
+      personal plan below. Your existing progress, notes, and history will stay
+      tied to your account either way.
+    </p>
+    <a href="${subscribeUrl}" style="display:inline-block;padding:12px 32px;background-color:#2563eb;color:#ffffff;text-decoration:none;border-radius:6px;font-size:15px;font-weight:500;">
+      View subscription options
+    </a>
+    <p style="margin:24px 0 0;font-size:13px;color:#71717a;line-height:1.5;">
+      No action is required if you're done — your institution access will simply
+      lapse on the date above.
+    </p>`;
+
+  await sendEmail(
+    email,
+    `${heading} — Lex AI`,
+    wrapHtml(content)
+  );
+}
+
 export async function sendNoPasswordEmail(email: string) {
   const content = `
     <h2 style="margin:0 0 16px;font-size:22px;color:#18181b;">Password Reset Request</h2>

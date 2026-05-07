@@ -3,6 +3,7 @@ import {
   createOrganizationSchema,
   updateOrganizationSchema,
 } from "../../schemas/admin.js";
+import { recordAdminAction } from "../../lib/audit.js";
 
 export default async function organizationRoutes(app: FastifyInstance) {
   // POST /organizations — Create organization
@@ -41,6 +42,22 @@ export default async function organizationRoutes(app: FastifyInstance) {
             : null,
           accessEndDate: accessEndDate ? new Date(accessEndDate) : null,
         },
+      });
+
+      await recordAdminAction({
+        prisma: app.prisma,
+        actor: request.currentUser!,
+        action: "ORG_CREATE",
+        entityType: "ORGANIZATION",
+        entityId: org.id,
+        metadata: {
+          name: org.name,
+          slug: org.slug,
+          emailDomains: org.emailDomains,
+          accessStartDate: org.accessStartDate?.toISOString() ?? null,
+          accessEndDate: org.accessEndDate?.toISOString() ?? null,
+        },
+        log: request.log,
       });
 
       return reply.status(201).send({ success: true, organization: org });
@@ -119,22 +136,61 @@ export default async function organizationRoutes(app: FastifyInstance) {
         parsed.data;
 
       const data: Record<string, any> = {};
-      if (name !== undefined) data.name = name;
-      if (emailDomains !== undefined) data.emailDomains = emailDomains;
-      if (isActive !== undefined) data.isActive = isActive;
+      const changes: Record<string, { from: unknown; to: unknown }> = {};
+
+      const track = (field: string, from: unknown, to: unknown) => {
+        if (JSON.stringify(from) !== JSON.stringify(to)) {
+          changes[field] = { from, to };
+        }
+      };
+
+      if (name !== undefined) {
+        data.name = name;
+        track("name", existing.name, name);
+      }
+      if (emailDomains !== undefined) {
+        data.emailDomains = emailDomains;
+        track("emailDomains", existing.emailDomains, emailDomains);
+      }
+      if (isActive !== undefined) {
+        data.isActive = isActive;
+        track("isActive", existing.isActive, isActive);
+      }
       if (accessStartDate !== undefined) {
-        data.accessStartDate = accessStartDate
-          ? new Date(accessStartDate)
-          : null;
+        const next = accessStartDate ? new Date(accessStartDate) : null;
+        data.accessStartDate = next;
+        track(
+          "accessStartDate",
+          existing.accessStartDate?.toISOString() ?? null,
+          next?.toISOString() ?? null
+        );
       }
       if (accessEndDate !== undefined) {
-        data.accessEndDate = accessEndDate ? new Date(accessEndDate) : null;
+        const next = accessEndDate ? new Date(accessEndDate) : null;
+        data.accessEndDate = next;
+        track(
+          "accessEndDate",
+          existing.accessEndDate?.toISOString() ?? null,
+          next?.toISOString() ?? null
+        );
       }
 
       const org = await app.prisma.organization.update({
         where: { id: request.params.id },
         data,
       });
+
+      if (Object.keys(changes).length > 0) {
+        await recordAdminAction({
+          prisma: app.prisma,
+          actor: request.currentUser!,
+          action: "ORG_UPDATE",
+          entityType: "ORGANIZATION",
+          entityId: org.id,
+          metadata: { changes },
+          log: request.log,
+        });
+      }
 
       return reply.send({ success: true, organization: org });
     }

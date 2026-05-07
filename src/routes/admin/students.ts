@@ -3,6 +3,8 @@ import { parse } from "csv-parse/sync";
 import { addStudentSchema } from "../../schemas/admin.js";
 import { generateToken } from "../../lib/tokens.js";
 import { sendInvitationEmail } from "../../lib/email.js";
+import { recordAdminAction } from "../../lib/audit.js";
+import { revokeAllUserTokens } from "../../lib/session.js";
 
 const INVITATION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -75,6 +77,21 @@ export default async function studentRoutes(app: FastifyInstance) {
       } catch (err) {
         app.log.error(err, "Failed to send invitation email");
       }
+
+      await recordAdminAction({
+        prisma: app.prisma,
+        actor: request.currentUser!,
+        action: "STUDENT_ADD",
+        entityType: "PRELOADED_STUDENT",
+        entityId: student.id,
+        metadata: {
+          organizationId: org.id,
+          organizationName: org.name,
+          email: normalizedEmail,
+          name: student.name,
+        },
+        log: request.log,
+      });
 
       return reply.status(201).send({
         success: true,
@@ -203,6 +220,22 @@ export default async function studentRoutes(app: FastifyInstance) {
         }
       }
 
+      await recordAdminAction({
+        prisma: app.prisma,
+        actor: request.currentUser!,
+        action: "STUDENT_BULK_ADD",
+        entityType: "ORGANIZATION",
+        entityId: org.id,
+        metadata: {
+          organizationName: org.name,
+          rowsTotal: records.length,
+          added: results.added,
+          skipped: results.skipped,
+          errorCount: results.errors.length,
+        },
+        log: request.log,
+      });
+
       return reply.send({ success: true, ...results });
     }
   );
@@ -258,7 +291,106 @@ export default async function studentRoutes(app: FastifyInstance) {
         where: { id: student.id },
       });
 
+      await recordAdminAction({
+        prisma: app.prisma,
+        actor: request.currentUser!,
+        action: "STUDENT_REMOVE",
+        entityType: "PRELOADED_STUDENT",
+        entityId: student.id,
+        metadata: {
+          organizationId: student.organizationId,
+          email: student.email,
+        },
+        log: request.log,
+      });
+
       return reply.send({ success: true });
+    }
+  );
+
+  // PATCH /organizations/:orgId/members/:id — Revoke or reinstate a claimed
+  // member's institution access. Flips OrganizationMember.isActive. On
+  // revoke, the user's refresh tokens are invalidated so their access
+  // collapses on the next refresh (within the JWT TTL of 15 minutes).
+  app.patch<{
+    Params: { orgId: string; id: string };
+    Body: { isActive?: boolean };
+  }>(
+    "/organizations/:orgId/members/:id",
+    {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const { isActive } = request.body ?? {};
+      if (typeof isActive !== "boolean") {
+        return reply.status(400).send({
+          error: "Body must include boolean `isActive`",
+        });
+      }
+
+      const member = await app.prisma.organizationMember.findFirst({
+        where: {
+          id: request.params.id,
+          organizationId: request.params.orgId,
+        },
+        include: {
+          user: { select: { id: true, email: true, name: true } },
+          organization: { select: { id: true, name: true } },
+        },
+      });
+
+      if (!member) {
+        return reply.status(404).send({ error: "Member not found" });
+      }
+
+      if (member.isActive === isActive) {
+        return reply.send({
+          success: true,
+          member: {
+            id: member.id,
+            isActive: member.isActive,
+            user: member.user,
+          },
+          unchanged: true,
+        });
+      }
+
+      const updated = await app.prisma.organizationMember.update({
+        where: { id: member.id },
+        data: { isActive },
+      });
+
+      // On revoke, kill the user's refresh tokens so their elevated
+      // access can't survive past the current 15-minute access token TTL.
+      if (!isActive) {
+        await revokeAllUserTokens(app.prisma, member.userId);
+      }
+
+      await recordAdminAction({
+        prisma: app.prisma,
+        actor: request.currentUser!,
+        action: isActive ? "MEMBER_REINSTATE" : "MEMBER_REVOKE",
+        entityType: "ORGANIZATION_MEMBER",
+        entityId: member.id,
+        metadata: {
+          organizationId: member.organization.id,
+          organizationName: member.organization.name,
+          userId: member.user.id,
+          userEmail: member.user.email,
+          previousIsActive: member.isActive,
+          newIsActive: isActive,
+        },
+        log: request.log,
+      });
+
+      return reply.send({
+        success: true,
+        member: {
+          id: updated.id,
+          isActive: updated.isActive,
+          user: member.user,
+        },
+      });
     }
   );
 }

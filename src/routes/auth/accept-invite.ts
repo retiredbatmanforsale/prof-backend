@@ -39,6 +39,20 @@ export default async function acceptInviteRoute(app: FastifyInstance) {
         return reply.status(410).send({ error: "This invitation has expired" });
       }
 
+      const inviteOrg = await app.prisma.organization.findUnique({
+        where: { id: invitation.preloadedStudent.organizationId },
+        select: { isActive: true, accessEndDate: true },
+      });
+      const orgInactive = inviteOrg && !inviteOrg.isActive;
+      const orgWindowEnded =
+        inviteOrg?.accessEndDate && inviteOrg.accessEndDate < new Date();
+      if (orgInactive || orgWindowEnded) {
+        return reply.status(410).send({
+          error:
+            "This invitation is no longer valid — the organization's access window has ended.",
+        });
+      }
+
       return reply.send({
         email: invitation.preloadedStudent.email,
         name: invitation.preloadedStudent.name,
@@ -86,6 +100,17 @@ export default async function acceptInviteRoute(app: FastifyInstance) {
       }
 
       const { preloadedStudent } = invitation;
+      const orgInactive = !preloadedStudent.organization.isActive;
+      const orgWindowEnded =
+        preloadedStudent.organization.accessEndDate &&
+        preloadedStudent.organization.accessEndDate < new Date();
+      if (orgInactive || orgWindowEnded) {
+        return reply.status(410).send({
+          error:
+            "This invitation is no longer valid — the organization's access window has ended.",
+        });
+      }
+
       const hashedPw = await hashPassword(password);
 
       // Check if user already exists

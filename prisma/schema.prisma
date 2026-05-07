@@ -115,11 +115,29 @@ model OrganizationMember {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  expiryNotices    ExpiryNoticeLog[]
 
   @@unique([userId, organizationId])
   @@map("organization_members")
+}
+
+// One row per (member, kind, targetEndDate) so a heads-up is sent at most
+// once per upcoming expiry. If an admin extends accessEndDate, the new date
+// is a new targetEndDate and the warning re-fires.
+model ExpiryNoticeLog {
+  id                   String   @id @default(cuid())
+  organizationMemberId String
+  kind                 String
+  targetEndDate        DateTime
+  sentAt               DateTime @default(now())
+
+  organizationMember OrganizationMember @relation(fields: [organizationMemberId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationMemberId, kind, targetEndDate])
+  @@index([organizationMemberId])
+  @@map("expiry_notice_logs")
 }
 
 model PreloadedStudent {
@@ -297,6 +315,27 @@ model WaitlistEntry {
   @@index([source])
   @@index([createdAt])
   @@map("waitlist_entries")
+}
+
+// ─── Admin Audit Log ──────────────────────────────────────────
+
+// Append-only record of admin actions on institutional/membership state.
+// Captures who did what, when, and any relevant before/after values so
+// access changes can be reconstructed without trawling DB backups.
+model AdminAuditLog {
+  id         String   @id @default(cuid())
+  actorId    String
+  actorEmail String
+  action     String
+  entityType String
+  entityId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([actorId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("admin_audit_logs")
 }
 
 // ─── Auth Support Tables ──────────────────────────────────────

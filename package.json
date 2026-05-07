@@ -13,7 +13,8 @@
     "db:studio": "prisma studio",
     "db:generate": "prisma generate",
     "db:seed": "tsx prisma/seed.ts",
-    "db:seed-plans": "tsx --env-file=.env prisma/seed-plans.ts"
+    "db:seed-plans": "tsx --env-file=.env prisma/seed-plans.ts",
+    "job:expiry-notices": "tsx --env-file=.env scripts/send-expiry-notices.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.90.0",
