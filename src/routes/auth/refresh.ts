@@ -3,6 +3,8 @@ import { refreshSchema } from "../../schemas/auth.js";
 import { hashToken } from "../../lib/tokens.js";
 import { issueTokens, revokeRefreshToken } from "../../lib/session.js";
 
+const ROTATION_GRACE_MS = 30 * 1000;
+
 export default async function refreshRoute(app: FastifyInstance) {
   app.post(
     "/refresh",
@@ -28,19 +30,7 @@ export default async function refreshRoute(app: FastifyInstance) {
         include: { user: true },
       });
 
-      if (
-        !tokenRecord ||
-        tokenRecord.isRevoked ||
-        tokenRecord.expiresAt < new Date()
-      ) {
-        // Token theft detection: if token was already revoked, revoke all user tokens
-        if (tokenRecord && tokenRecord.isRevoked) {
-          await app.prisma.refreshToken.updateMany({
-            where: { userId: tokenRecord.userId },
-            data: { isRevoked: true },
-          });
-        }
-
+      if (!tokenRecord || tokenRecord.expiresAt < new Date()) {
         return reply.status(401).send({ error: "Invalid refresh token" });
       }
 
@@ -48,10 +38,33 @@ export default async function refreshRoute(app: FastifyInstance) {
         return reply.status(403).send({ error: "Account deactivated" });
       }
 
-      // Revoke old refresh token (rotation)
-      await revokeRefreshToken(app.prisma, rawToken);
+      if (tokenRecord.isRevoked) {
+        // Grace window: a token revoked via rotation (not logout) is still
+        // honored for a brief period to absorb multi-tab / parallel-request
+        // races. Issue a fresh pair without touching the existing chain.
+        if (
+          tokenRecord.rotatedAt &&
+          Date.now() - tokenRecord.rotatedAt.getTime() < ROTATION_GRACE_MS
+        ) {
+          const tokens = await issueTokens(app, tokenRecord.user, app.prisma);
+          return reply.send({
+            success: true,
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+          });
+        }
 
-      // Issue new tokens
+        // Genuine reuse outside the grace window — treat as theft and revoke
+        // every refresh token for this user.
+        await app.prisma.refreshToken.updateMany({
+          where: { userId: tokenRecord.userId },
+          data: { isRevoked: true },
+        });
+        return reply.status(401).send({ error: "Invalid refresh token" });
+      }
+
+      await revokeRefreshToken(app.prisma, rawToken, true);
+
       const tokens = await issueTokens(app, tokenRecord.user, app.prisma);
 
       return reply.send({

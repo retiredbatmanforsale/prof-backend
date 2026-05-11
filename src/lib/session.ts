@@ -166,12 +166,15 @@ export async function issueTokens(
 
 export async function revokeRefreshToken(
   prisma: PrismaClient,
-  rawToken: string
+  rawToken: string,
+  rotated = false
 ) {
   const hashed = hashToken(rawToken);
   await prisma.refreshToken.updateMany({
     where: { token: hashed },
-    data: { isRevoked: true },
+    data: rotated
+      ? { isRevoked: true, rotatedAt: new Date() }
+      : { isRevoked: true },
   });
 }
 
