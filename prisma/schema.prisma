@@ -63,6 +63,7 @@ model User {
   claimedPreloadedRecords PreloadedStudent[] @relation("ClaimedBy")
   quizAttempts            QuizAttempt[]
   lessonProgress          LessonProgress[]
+  lessonLikes             LessonLike[]
 
   @@map("users")
 }
@@ -268,6 +269,25 @@ model LessonProgress {
   @@index([userId])
   @@index([lessonId])
   @@map("lesson_progress")
+}
+
+// One row per (user, lessonSlug) — a like is a binary signal. Unique
+// constraint at the DB layer enforces one-vote-per-user-per-lesson, so
+// the frontend can be naive about double-clicks without server-side
+// dedup logic. Slug is the canonical lesson identifier — see the
+// slug-churn policy in /Users/lexai/Documents/prof/LIKES_FEATURE_PLAN.md
+// (commit to stable slugs; rename = manual UPDATE migration).
+model LessonLike {
+  id         String   @id @default(cuid())
+  userId     String
+  lessonSlug String
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, lessonSlug])
+  @@index([lessonSlug])
+  @@map("lesson_likes")
 }
 
 // ─── Quiz Tables ─────────────────────────────────────────────
