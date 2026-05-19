@@ -1,44 +1,36 @@
 /**
  * Static course → lesson manifest used by the progress summary endpoint to
- * compute completion percentages. Mirrors prof-content-engine/sidebars.ts —
- * if that file changes, update this one. Lesson IDs match Docusaurus
- * `metadata.id` (the slug stored in LessonProgress.lessonId).
+ * compute completion percentages. Source of truth is
+ * `prof-frontend/lib/courses/sidebar.ts`; if that file changes, update
+ * this one to match. Lesson IDs match the frontend's velite slug
+ * (the value stored in LessonProgress.lessonId).
  *
- * Practice / Writing are excluded — they're not "courses" with completion
- * semantics. Add later if needed.
+ * Practice problems are excluded — they have their own progress
+ * surface and don't fit the "course with N sequential lessons" shape.
+ * Intro pages are excluded so progress reads "completed 3 of 7 real
+ * lessons" rather than inflating the total with a course splash.
  */
 
 export interface CourseDef {
   id: string;
   label: string;
-  track: 'AI for Engineering' | 'AI for Leaders' | 'Practice';
+  track: 'AI for Engineering';
   lessons: readonly string[];
 }
 
 export const COURSES: readonly CourseDef[] = [
   {
-    id: 'ai-for-leaders/genai-for-everyone',
-    label: 'AI for Everyone — Gen AI & use cases',
-    track: 'AI for Leaders',
+    id: 'ai-for-engineering/foundations-of-regression',
+    label: 'Foundations of Regression',
+    track: 'AI for Engineering',
     lessons: [
-      'ai-for-leaders/genai-for-everyone/intro',
-      'ai-for-leaders/genai-for-everyone/literacy-and-the-road-to-generative-ai',
-      'ai-for-leaders/genai-for-everyone/five-layer-ai-stack',
-      'ai-for-leaders/genai-for-everyone/ai-model-lifecycle-for-leaders',
-      'ai-for-leaders/genai-for-everyone/llm-design-case-study',
-    ],
-  },
-  {
-    id: 'ai-for-leaders/prompt-engineering',
-    label: 'Prompt Engineering',
-    track: 'AI for Leaders',
-    lessons: [
-      'ai-for-leaders/prompt-engineering/introduction',
-      'ai-for-leaders/prompt-engineering/design-of-a-prompt',
-      'ai-for-leaders/prompt-engineering/language-models-are-few-shot-learners',
-      'ai-for-leaders/prompt-engineering/hallucinations-in-large-language-models',
-      'ai-for-leaders/prompt-engineering/hands-on-prompt-design-webapp-cursor',
-      'ai-for-leaders/prompt-engineering/building-digital-assets-tutorial',
+      'ai-for-engineering/foundations-of-regression/linear-regression-line-ssr-gradient-descent',
+      'ai-for-engineering/foundations-of-regression/why-logistic-regression',
+      'ai-for-engineering/foundations-of-regression/sigmoid-function-logistic-regression',
+      'ai-for-engineering/foundations-of-regression/logistic-regression-decision-boundaries',
+      'ai-for-engineering/foundations-of-regression/intuition-behind-logistic-regression',
+      'ai-for-engineering/foundations-of-regression/log-likelihood-instead-of-squared-error',
+      'ai-for-engineering/foundations-of-regression/interview-readiness',
     ],
   },
   {
@@ -60,20 +52,6 @@ export const COURSES: readonly CourseDef[] = [
     ],
   },
   {
-    id: 'ai-for-engineering/foundations-of-regression',
-    label: 'Foundations of Regression',
-    track: 'AI for Engineering',
-    lessons: [
-      'ai-for-engineering/foundations-of-regression/linear-regression-line-ssr-gradient-descent',
-      'ai-for-engineering/foundations-of-regression/why-logistic-regression',
-      'ai-for-engineering/foundations-of-regression/sigmoid-function-logistic-regression',
-      'ai-for-engineering/foundations-of-regression/logistic-regression-decision-boundaries',
-      'ai-for-engineering/foundations-of-regression/intuition-behind-logistic-regression',
-      'ai-for-engineering/foundations-of-regression/log-likelihood-instead-of-squared-error',
-      'ai-for-engineering/foundations-of-regression/interview-readiness',
-    ],
-  },
-  {
     id: 'ai-for-engineering/deep-computer-vision-cnn',
     label: 'Deep Computer Vision (CNN)',
     track: 'AI for Engineering',
@@ -82,10 +60,11 @@ export const COURSES: readonly CourseDef[] = [
       'ai-for-engineering/deep-computer-vision-cnn/transformative-deep-learning-vision',
       'ai-for-engineering/deep-computer-vision-cnn/from-pixels-to-perception',
       'ai-for-engineering/deep-computer-vision-cnn/feature-detection-hierarchy',
-      'ai-for-engineering/deep-computer-vision-cnn/learning-features-from-data',
       'ai-for-engineering/deep-computer-vision-cnn/preserving-spatial-structure-cnns',
       'ai-for-engineering/deep-computer-vision-cnn/filters-features-convolutions',
       'ai-for-engineering/deep-computer-vision-cnn/learning-to-see-cnns',
+      'ai-for-engineering/deep-computer-vision-cnn/cnn-architectures-applications',
+      'ai-for-engineering/deep-computer-vision-cnn/implement-cnn-from-scratch',
       'ai-for-engineering/deep-computer-vision-cnn/interview-readiness',
     ],
   },
@@ -97,6 +76,7 @@ export const COURSES: readonly CourseDef[] = [
       'ai-for-engineering/deep-sequence-modelling-rnn/foundations-of-deep-sequence-modeling',
       'ai-for-engineering/deep-sequence-modelling-rnn/from-static-networks-to-time-aware',
       'ai-for-engineering/deep-sequence-modelling-rnn/rnn-internal-mechanics',
+      'ai-for-engineering/deep-sequence-modelling-rnn/lstm-and-gru',
       'ai-for-engineering/deep-sequence-modelling-rnn/bringing-sequence-modeling-real-world',
       'ai-for-engineering/deep-sequence-modelling-rnn/training-rnn-backprop-through-time',
       'ai-for-engineering/deep-sequence-modelling-rnn/training-an-rnn-in-pytorch',
@@ -156,11 +136,34 @@ export const COURSES: readonly CourseDef[] = [
     ],
   },
   {
+    id: 'ai-for-engineering/ml-system-design',
+    label: 'ML System Design',
+    track: 'AI for Engineering',
+    lessons: [
+      'ai-for-engineering/ml-system-design/the-ml-sd-interview',
+      'ai-for-engineering/ml-system-design/recsys-define-the-problem',
+      'ai-for-engineering/ml-system-design/recsys-data-pipeline',
+      'ai-for-engineering/ml-system-design/recsys-retrieval-two-tower',
+      'ai-for-engineering/ml-system-design/recsys-ranking',
+      'ai-for-engineering/ml-system-design/recsys-online-serving',
+      'ai-for-engineering/ml-system-design/recsys-evaluation-and-ab-testing',
+      'ai-for-engineering/ml-system-design/recsys-monitoring-and-retraining',
+      'ai-for-engineering/ml-system-design/rag-define-the-problem',
+      'ai-for-engineering/ml-system-design/rag-retrieval-and-reranking',
+      'ai-for-engineering/ml-system-design/rag-generation-and-serving',
+      'ai-for-engineering/ml-system-design/rag-evaluation',
+      'ai-for-engineering/ml-system-design/case-ad-ctr-prediction',
+      'ai-for-engineering/ml-system-design/case-real-time-fraud-detection',
+      'ai-for-engineering/ml-system-design/case-eta-prediction',
+      'ai-for-engineering/ml-system-design/case-multimodal-search',
+      'ai-for-engineering/ml-system-design/interview-readiness',
+    ],
+  },
+  {
     id: 'ai-for-engineering/mle-interview',
     label: 'MLE Interview',
     track: 'AI for Engineering',
     lessons: [
-      'ai-for-engineering/mle-interview/intro',
       'ai-for-engineering/mle-interview/rubrics-and-playbook',
       'ai-for-engineering/mle-interview/guides/recently-asked',
       'ai-for-engineering/mle-interview/guides/meta/e3',
@@ -182,18 +185,6 @@ export const COURSES: readonly CourseDef[] = [
       'ai-for-engineering/mle-interview/guides/apple/ict2',
       'ai-for-engineering/mle-interview/guides/apple/ict3',
       'ai-for-engineering/mle-interview/guides/apple/ict4',
-    ],
-  },
-  {
-    id: 'practice',
-    label: 'ML Coding Problems',
-    track: 'Practice',
-    lessons: [
-      'practice/softmax-from-scratch',
-      'practice/scaled-dot-product-attention',
-      'practice/bpe-apply-merges',
-      'practice/top-p-sampling',
-      'practice/cross-entropy-gradient',
     ],
   },
 ] as const;

@@ -132,19 +132,30 @@ export function recordActivity(
   } else {
     const gap = daysBetween(prev.lastActiveDay, today);
     if (gap === 1) {
+      // Consecutive day.
       currentStreak = prev.currentStreak + 1;
-    } else if (gap === 2 && freezesAvailable > 0) {
-      // Skipped exactly one day; consume a freeze to keep the streak
-      // alive and backfill yesterday in the heatmap so the user sees
-      // continuity rather than a hole.
+    } else if (gap === 2) {
+      // Missed exactly one day — free pass, no freeze cost (2026-05-19
+      // policy: one-day gaps are forgiven to make the streak loop feel
+      // less punishing). Yesterday gets backfilled in the heatmap so
+      // the user sees a continuous strip rather than a hole.
       const yesterday = addDays(today, -1);
       history[yesterday] = true;
+      currentStreak = prev.currentStreak + 1;
+    } else if (gap === 3 && freezesAvailable > 0) {
+      // Missed two days — consume a freeze to keep the streak alive and
+      // backfill both missed days so the heatmap doesn't show a gap.
+      // Without an available freeze this falls through to the reset.
+      const yesterday = addDays(today, -1);
+      const dayBefore = addDays(today, -2);
+      history[yesterday] = true;
+      history[dayBefore] = true;
       freezesAvailable -= 1;
       currentStreak = prev.currentStreak + 1;
       freezeConsumed = true;
     } else {
-      // Two-or-more-day gap (with no freeze) or a backwards date —
-      // streak resets.
+      // Three-or-more day gap with no freeze, or any 4+ day gap —
+      // streak resets. Also catches backwards-dated events defensively.
       currentStreak = 1;
     }
   }
