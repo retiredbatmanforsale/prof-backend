@@ -15,6 +15,7 @@ import quizRoutes from "./routes/quiz/index.js";
 import tutorRoutes from "./routes/tutor/index.js";
 import progressRoutes from "./routes/progress/index.js";
 import lessonRoutes from "./routes/lessons/index.js";
+import streakRoutes from "./routes/streak/index.js";
 
 export async function buildApp() {
   const app = Fastify({
@@ -122,6 +123,7 @@ export async function buildApp() {
   await app.register(tutorRoutes, { prefix: "/tutor" });
   await app.register(progressRoutes, { prefix: "/progress" });
   await app.register(lessonRoutes, { prefix: "/lessons" });
+  await app.register(streakRoutes, { prefix: "/streak" });
 
   return app;
 }

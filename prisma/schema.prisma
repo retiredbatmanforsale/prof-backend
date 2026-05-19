@@ -64,6 +64,7 @@ model User {
   quizAttempts            QuizAttempt[]
   lessonProgress          LessonProgress[]
   lessonLikes             LessonLike[]
+  streak                  UserStreak?
 
   @@map("users")
 }
@@ -307,6 +308,30 @@ model QuizAttempt {
   @@unique([userId, lessonId])
   @@index([userId])
   @@map("quiz_attempts")
+}
+
+// Per-user streak state. One row per user, keyed by userId so the row
+// is created lazily on first activity and trivially looked up on every
+// page mount. Days are computed in UTC server-side (intentional — see
+// STREAK_BACKEND_PLAN.md in prof-frontend for the timezone tradeoff).
+// `todayActivities` is pruned on the first event of a new UTC day.
+// `history` keeps a compact {YYYY-MM-DD: true} map for the 30-day
+// heatmap on /account; older data can be reconstructed from
+// LessonProgress + QuizAttempt timestamps if a wider range is needed.
+model UserStreak {
+  userId           String    @id
+  currentStreak    Int       @default(0)
+  longestStreak    Int       @default(0)
+  totalActiveDays  Int       @default(0)
+  freezesAvailable Int       @default(3)
+  lastActiveDay    DateTime? @db.Date
+  todayActivities  Json      @default("[]")
+  history          Json      @default("{}")
+  updatedAt        DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_streak")
 }
 
 // ─── Waitlist ─────────────────────────────────────────────────
