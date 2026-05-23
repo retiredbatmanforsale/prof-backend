@@ -95,10 +95,12 @@ export default async function loginRoute(app: FastifyInstance) {
               organizationId: preloaded.organizationId,
               isVerified: true,
               isActive: true,
+              isOrgAdmin: preloaded.isOrgAdmin,
             },
             update: {
               isVerified: true,
               isActive: true,
+              isOrgAdmin: preloaded.isOrgAdmin || undefined,
             },
           }),
         ]);

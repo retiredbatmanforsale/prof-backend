@@ -240,6 +240,143 @@ export default async function studentRoutes(app: FastifyInstance) {
     }
   );
 
+  // POST /organizations/:orgId/admins/bulk — CSV upload of org-admin emails.
+  // Each email is preloaded and marked isOrgAdmin so that on claim/auto-claim
+  // the resulting OrganizationMember can view the org metrics dashboard
+  // (/org/*). If the person has already joined, their membership is promoted
+  // to org admin immediately; otherwise an invitation is (re)issued so they
+  // can claim. CSV format: a single `email` column (header required).
+  app.post<{ Params: { orgId: string } }>(
+    "/organizations/:orgId/admins/bulk",
+    {
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const org = await app.prisma.organization.findUnique({
+        where: { id: request.params.orgId },
+      });
+      if (!org) {
+        return reply.status(404).send({ error: "Organization not found" });
+      }
+
+      const file = await request.file();
+      if (!file) {
+        return reply.status(400).send({ error: "No file uploaded" });
+      }
+
+      const buffer = await file.toBuffer();
+      const csvContent = buffer.toString("utf-8");
+
+      let records: Array<Record<string, string>>;
+      try {
+        records = parse(csvContent, {
+          columns: true,
+          skip_empty_lines: true,
+          trim: true,
+        });
+      } catch {
+        return reply
+          .status(400)
+          .send({ error: "Invalid CSV format. Expected a single column: email" });
+      }
+
+      if (records.length > 1000) {
+        return reply
+          .status(400)
+          .send({ error: "CSV file exceeds maximum of 1,000 rows" });
+      }
+
+      const results = {
+        invited: 0,
+        promoted: 0,
+        errors: [] as string[],
+      };
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+      for (let i = 0; i < records.length; i++) {
+        const row = records[i];
+        const email = (row.email || "").toLowerCase().trim();
+
+        if (!email) {
+          results.errors.push(`Row ${i + 1}: Missing email`);
+          continue;
+        }
+
+        if (!emailRegex.test(email)) {
+          results.errors.push(`Row ${i + 1}: Invalid email "${email}"`);
+          continue;
+        }
+
+        try {
+          const student = await app.prisma.preloadedStudent.upsert({
+            where: {
+              organizationId_email: { organizationId: org.id, email },
+            },
+            create: { email, organizationId: org.id, isOrgAdmin: true },
+            update: { isOrgAdmin: true },
+          });
+
+          // Already joined? Promote the live membership now so the dashboard
+          // unlocks on their next token refresh (≤ 15 min). The /org guard
+          // re-checks the DB, so the API itself works immediately.
+          if (student.claimed && student.claimedByUserId) {
+            await app.prisma.organizationMember.updateMany({
+              where: {
+                userId: student.claimedByUserId,
+                organizationId: org.id,
+              },
+              data: { isOrgAdmin: true },
+            });
+            results.promoted++;
+            continue;
+          }
+
+          // Not yet joined — (re)issue an invite so they can claim. Mirrors
+          // the student bulk invite flow.
+          await app.prisma.invitationToken.updateMany({
+            where: { preloadedStudentId: student.id, used: false },
+            data: { used: true },
+          });
+          const rawToken = generateToken();
+          await app.prisma.invitationToken.create({
+            data: {
+              token: rawToken,
+              preloadedStudentId: student.id,
+              expiresAt: new Date(Date.now() + INVITATION_EXPIRY_MS),
+            },
+          });
+          try {
+            await sendInvitationEmail(email, org.name, rawToken);
+          } catch (err) {
+            app.log.error(err, `Failed to send invitation to ${email}`);
+          }
+          results.invited++;
+        } catch (err) {
+          app.log.error(err, `Failed to process admin ${email}`);
+          results.errors.push(`Row ${i + 1}: Failed to process "${email}"`);
+        }
+      }
+
+      await recordAdminAction({
+        prisma: app.prisma,
+        actor: request.currentUser!,
+        action: "ORG_ADMIN_BULK_ADD",
+        entityType: "ORGANIZATION",
+        entityId: org.id,
+        metadata: {
+          organizationName: org.name,
+          rowsTotal: records.length,
+          invited: results.invited,
+          promoted: results.promoted,
+          errorCount: results.errors.length,
+        },
+        log: request.log,
+      });
+
+      return reply.send({ success: true, ...results });
+    }
+  );
+
   // GET /organizations/:orgId/students — List students
   app.get<{ Params: { orgId: string } }>(
     "/organizations/:orgId/students",
@@ -308,23 +445,26 @@ export default async function studentRoutes(app: FastifyInstance) {
     }
   );
 
-  // PATCH /organizations/:orgId/members/:id — Revoke or reinstate a claimed
-  // member's institution access. Flips OrganizationMember.isActive. On
-  // revoke, the user's refresh tokens are invalidated so their access
-  // collapses on the next refresh (within the JWT TTL of 15 minutes).
+  // PATCH /organizations/:orgId/members/:id — Update a claimed member's
+  // institution access (`isActive`) and/or org-admin status (`isOrgAdmin`).
+  // Either field may be sent independently. On revoke, the user's refresh
+  // tokens are invalidated so their access collapses on the next refresh
+  // (within the JWT TTL of 15 minutes). Granting/removing org-admin takes
+  // effect for the /org dashboard immediately (the guard re-checks the DB)
+  // and surfaces in their JWT on the next refresh.
   app.patch<{
     Params: { orgId: string; id: string };
-    Body: { isActive?: boolean };
+    Body: { isActive?: boolean; isOrgAdmin?: boolean };
   }>(
     "/organizations/:orgId/members/:id",
     {
       config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
-      const { isActive } = request.body ?? {};
-      if (typeof isActive !== "boolean") {
+      const { isActive, isOrgAdmin } = request.body ?? {};
+      if (typeof isActive !== "boolean" && typeof isOrgAdmin !== "boolean") {
         return reply.status(400).send({
-          error: "Body must include boolean `isActive`",
+          error: "Body must include boolean `isActive` and/or `isOrgAdmin`",
         });
       }
 
@@ -343,12 +483,22 @@ export default async function studentRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "Member not found" });
       }
 
-      if (member.isActive === isActive) {
+      // Only persist dimensions that actually change.
+      const data: { isActive?: boolean; isOrgAdmin?: boolean } = {};
+      if (typeof isActive === "boolean" && isActive !== member.isActive) {
+        data.isActive = isActive;
+      }
+      if (typeof isOrgAdmin === "boolean" && isOrgAdmin !== member.isOrgAdmin) {
+        data.isOrgAdmin = isOrgAdmin;
+      }
+
+      if (Object.keys(data).length === 0) {
         return reply.send({
           success: true,
           member: {
             id: member.id,
             isActive: member.isActive,
+            isOrgAdmin: member.isOrgAdmin,
             user: member.user,
           },
           unchanged: true,
@@ -357,37 +507,60 @@ export default async function studentRoutes(app: FastifyInstance) {
 
       const updated = await app.prisma.organizationMember.update({
         where: { id: member.id },
-        data: { isActive },
+        data,
       });
 
       // On revoke, kill the user's refresh tokens so their elevated
       // access can't survive past the current 15-minute access token TTL.
-      if (!isActive) {
+      if (data.isActive === false) {
         await revokeAllUserTokens(app.prisma, member.userId);
       }
 
-      await recordAdminAction({
-        prisma: app.prisma,
-        actor: request.currentUser!,
-        action: isActive ? "MEMBER_REINSTATE" : "MEMBER_REVOKE",
-        entityType: "ORGANIZATION_MEMBER",
-        entityId: member.id,
-        metadata: {
-          organizationId: member.organization.id,
-          organizationName: member.organization.name,
-          userId: member.user.id,
-          userEmail: member.user.email,
-          previousIsActive: member.isActive,
-          newIsActive: isActive,
-        },
-        log: request.log,
-      });
+      const baseMeta = {
+        organizationId: member.organization.id,
+        organizationName: member.organization.name,
+        userId: member.user.id,
+        userEmail: member.user.email,
+      };
+
+      if (data.isActive !== undefined) {
+        await recordAdminAction({
+          prisma: app.prisma,
+          actor: request.currentUser!,
+          action: data.isActive ? "MEMBER_REINSTATE" : "MEMBER_REVOKE",
+          entityType: "ORGANIZATION_MEMBER",
+          entityId: member.id,
+          metadata: {
+            ...baseMeta,
+            previousIsActive: member.isActive,
+            newIsActive: data.isActive,
+          },
+          log: request.log,
+        });
+      }
+
+      if (data.isOrgAdmin !== undefined) {
+        await recordAdminAction({
+          prisma: app.prisma,
+          actor: request.currentUser!,
+          action: data.isOrgAdmin ? "ORG_ADMIN_GRANT" : "ORG_ADMIN_REVOKE",
+          entityType: "ORGANIZATION_MEMBER",
+          entityId: member.id,
+          metadata: {
+            ...baseMeta,
+            previousIsOrgAdmin: member.isOrgAdmin,
+            newIsOrgAdmin: data.isOrgAdmin,
+          },
+          log: request.log,
+        });
+      }
 
       return reply.send({
         success: true,
         member: {
           id: updated.id,
           isActive: updated.isActive,
+          isOrgAdmin: updated.isOrgAdmin,
           user: member.user,
         },
       });

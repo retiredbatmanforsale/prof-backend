@@ -141,10 +141,14 @@ export default async function acceptInviteRoute(app: FastifyInstance) {
               organizationId: preloadedStudent.organizationId,
               isVerified: true,
               isActive: true,
+              isOrgAdmin: preloadedStudent.isOrgAdmin,
             },
+            // Escalate to org admin if the preloaded record says so; never
+            // silently demote an existing admin on re-claim.
             update: {
               isVerified: true,
               isActive: true,
+              isOrgAdmin: preloadedStudent.isOrgAdmin || undefined,
             },
           }),
           app.prisma.preloadedStudent.update({
@@ -175,6 +179,7 @@ export default async function acceptInviteRoute(app: FastifyInstance) {
               organizationId: preloadedStudent.organizationId,
               isVerified: true,
               isActive: true,
+              isOrgAdmin: preloadedStudent.isOrgAdmin,
             },
           });
 
