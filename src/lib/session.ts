@@ -114,6 +114,51 @@ export async function getAccessInfo(
   return { hasAccess: false, accessType: null, organizationName: null };
 }
 
+/**
+ * Resolve a user's organization-admin scope, independent of the access-type
+ * branching in getAccessInfo (an org admin may also be a paid/comp user, in
+ * which case getAccessInfo short-circuits before reaching the membership
+ * lookup). Returns the org the user administers, or nulls if they admin none.
+ *
+ * Only counts active org-admin memberships of an active organization that is
+ * within its access window — a revoked member or an expired org grants no
+ * dashboard access.
+ */
+export async function getOrgAdminInfo(
+  prisma: PrismaClient,
+  userId: string
+): Promise<{
+  isOrgAdmin: boolean;
+  organizationId: string | null;
+  organizationName: string | null;
+}> {
+  const now = new Date();
+  const membership = await prisma.organizationMember.findFirst({
+    where: {
+      userId,
+      isOrgAdmin: true,
+      isActive: true,
+      organization: {
+        isActive: true,
+        OR: [{ accessStartDate: null }, { accessStartDate: { lte: now } }],
+        AND: {
+          OR: [{ accessEndDate: null }, { accessEndDate: { gte: now } }],
+        },
+      },
+    },
+    select: { organization: { select: { id: true, name: true } } },
+  });
+
+  if (!membership) {
+    return { isOrgAdmin: false, organizationId: null, organizationName: null };
+  }
+  return {
+    isOrgAdmin: true,
+    organizationId: membership.organization.id,
+    organizationName: membership.organization.name,
+  };
+}
+
 async function hasLegacyOneTimePayment(
   prisma: PrismaClient,
   userId: string
@@ -136,6 +181,7 @@ export async function issueTokens(
     prisma,
     user.id
   );
+  const orgAdmin = await getOrgAdminInfo(prisma, user.id);
 
   const payload: JWTPayload = {
     userId: user.id,
@@ -143,7 +189,11 @@ export async function issueTokens(
     role: user.role as JWTPayload["role"],
     hasAccess,
     accessType,
-    organizationName,
+    // Prefer the access-derived org name; fall back to the org the user
+    // administers so an org admin always sees their org name in the token.
+    organizationName: organizationName ?? orgAdmin.organizationName,
+    organizationId: orgAdmin.organizationId,
+    isOrgAdmin: orgAdmin.isOrgAdmin,
   };
 
   const accessToken = app.jwt.sign(payload, {

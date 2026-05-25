@@ -74,10 +74,12 @@ export default async function registerRoute(app: FastifyInstance) {
               organizationId: preloaded.organizationId,
               isVerified: true,
               isActive: true,
+              isOrgAdmin: preloaded.isOrgAdmin,
             },
             update: {
               isVerified: true,
               isActive: true,
+              isOrgAdmin: preloaded.isOrgAdmin || undefined,
             },
           }),
         ]);

@@ -121,6 +121,10 @@ model OrganizationMember {
   organizationId String
   isVerified     Boolean  @default(false)
   isActive       Boolean  @default(true)
+  // When true, this member can view their organization's consolidated
+  // metrics dashboard (/org/*). Distinct from the global Role.ADMIN, which
+  // governs the platform-wide /admin surface. Toggled by a platform admin.
+  isOrgAdmin     Boolean  @default(false)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -156,6 +160,11 @@ model PreloadedStudent {
   organizationId  String
   claimed         Boolean  @default(false)
   claimedByUserId String?
+  // Carries the org-admin designation set via the admins CSV upload (or the
+  // single add) before the person has an account. When they claim their
+  // invite (or auto-claim on login), this seeds OrganizationMember.isOrgAdmin
+  // so the org metrics dashboard (/org/*) becomes available to them.
+  isOrgAdmin      Boolean  @default(false)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 

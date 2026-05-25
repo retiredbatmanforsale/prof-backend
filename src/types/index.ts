@@ -7,6 +7,12 @@ export interface JWTPayload {
   hasAccess: boolean;
   accessType: "premium" | "subscription" | "institution" | null;
   organizationName: string | null;
+  // Org-admin scope. Lets the frontend decide whether to surface the
+  // organization metrics dashboard without an extra round-trip. The
+  // backend guard re-checks this against the DB and never trusts the
+  // token alone for authorization.
+  organizationId: string | null;
+  isOrgAdmin: boolean;
 }
 
 export interface GoogleUserPayload {
@@ -20,6 +26,12 @@ export interface GoogleUserPayload {
 declare module "fastify" {
   interface FastifyRequest {
     currentUser?: JWTPayload;
+    // Set by the requireOrgAdmin hook after an authoritative DB check.
+    // Org-scoped routes read this to know which organization to query.
+    orgAdminContext?: {
+      organizationId: string;
+      organizationName: string;
+    };
   }
 }
 

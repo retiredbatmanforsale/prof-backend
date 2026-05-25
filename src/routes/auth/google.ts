@@ -128,10 +128,12 @@ export default async function googleAuthRoute(app: FastifyInstance) {
               organizationId: preloaded.organizationId,
               isVerified: true,
               isActive: true,
+              isOrgAdmin: preloaded.isOrgAdmin,
             },
             update: {
               isVerified: true,
               isActive: true,
+              isOrgAdmin: preloaded.isOrgAdmin || undefined,
             },
           }),
         ]);
