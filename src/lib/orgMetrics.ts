@@ -1,13 +1,13 @@
-import type { PrismaClient } from "@prisma/client";
+import { OrgRole, type PrismaClient } from "@prisma/client";
 import { COURSES, KNOWN_LESSON_IDS, TOTAL_LESSONS } from "./courseManifest.js";
 
 /**
  * Consolidated learning metrics for one organization, computed entirely from
  * data we already persist: LessonProgress (read/mastered) and QuizAttempt.
  *
- * Cohort = active organization members who are NOT org admins. The admin
- * viewing the dashboard is staff, not a learner, so counting their (empty)
- * progress would drag every average down.
+ * Cohort = active organization members who are learners (orgRole STUDENT).
+ * Staff — campus admins AND faculty/lab/TA — are excluded: they're not
+ * learners, so counting their (empty) progress would drag every average down.
  *
  * Three headline metrics, each reported as both an average and a median so an
  * admin can see whether the mean is skewed by a few highly-active learners:
@@ -42,6 +42,11 @@ interface MetricTriplet {
 export interface OrgMetrics {
   organizationId: string;
   organizationName: string;
+  // Set when the metrics are scoped to a single section (cohort); null for the
+  // org-wide rollup. The shape is otherwise identical, so the frontend cohort
+  // dashboard reuses the same components.
+  sectionId: string | null;
+  sectionName: string | null;
   memberCount: number;
   // Mean and median sit side by side so the dashboard can render a direct
   // comparison block per metric.
@@ -77,18 +82,86 @@ const median = (xs: number[]) => {
   return round1(value);
 };
 
+/** A resolved learner: just the user identity the rollup needs. */
+type CohortMember = { user: { id: string; name: string; email: string } };
+
+interface CohortIdentity {
+  organizationId: string;
+  organizationName: string;
+  sectionId?: string | null;
+  sectionName?: string | null;
+}
+
+/**
+ * Org-wide consolidated metrics: cohort = active members who are students
+ * (orgRole STUDENT, excluding campus admins and faculty-tier staff).
+ */
 export async function computeOrgMetrics(
   prisma: PrismaClient,
   organizationId: string,
   organizationName: string
 ): Promise<OrgMetrics> {
-  // 1. Resolve the learner cohort (active, non-admin members).
   const members = await prisma.organizationMember.findMany({
-    where: { organizationId, isActive: true, isOrgAdmin: false },
+    where: { organizationId, isActive: true, orgRole: OrgRole.STUDENT },
+    select: { user: { select: { id: true, name: true, email: true } } },
+  });
+  return computeCohortMetrics(prisma, members, {
+    organizationId,
+    organizationName,
+  });
+}
+
+/**
+ * Section-scoped metrics: cohort = the section's active student members. The
+ * caller (route) is responsible for verifying the section exists and that the
+ * requester is authorized to see it; this just resolves and rolls up.
+ */
+export async function computeSectionMetrics(
+  prisma: PrismaClient,
+  sectionId: string
+): Promise<OrgMetrics | null> {
+  const section = await prisma.section.findUnique({
+    where: { id: sectionId },
     select: {
-      user: { select: { id: true, name: true, email: true } },
+      id: true,
+      name: true,
+      organization: { select: { id: true, name: true } },
+      students: {
+        where: {
+          member: { isActive: true, orgRole: OrgRole.STUDENT },
+        },
+        select: {
+          member: {
+            select: { user: { select: { id: true, name: true, email: true } } },
+          },
+        },
+      },
     },
   });
+  if (!section) return null;
+
+  const members: CohortMember[] = section.students.map((s) => s.member);
+  return computeCohortMetrics(prisma, members, {
+    organizationId: section.organization.id,
+    organizationName: section.organization.name,
+    sectionId: section.id,
+    sectionName: section.name,
+  });
+}
+
+/**
+ * Shared rollup: given an already-resolved learner cohort, compute the headline
+ * metrics. Used by both the org-wide and section-scoped entry points so the
+ * output shape stays identical.
+ */
+async function computeCohortMetrics(
+  prisma: PrismaClient,
+  members: CohortMember[],
+  identity: CohortIdentity
+): Promise<OrgMetrics> {
+  const { organizationId, organizationName } = identity;
+  const sectionId = identity.sectionId ?? null;
+  const sectionName = identity.sectionName ?? null;
 
   const userIds = members.map((m) => m.user.id);
 
@@ -102,6 +175,8 @@ export async function computeOrgMetrics(
     return {
       organizationId,
       organizationName,
+      sectionId,
+      sectionName,
       memberCount: 0,
       averages: zero,
       medians: { ...zero },
@@ -223,6 +298,8 @@ export async function computeOrgMetrics(
   return {
     organizationId,
     organizationName,
+    sectionId,
+    sectionName,
     memberCount: memberMetrics.length,
     averages: {
       daysActive: mean(daysActiveArr),
