@@ -10,6 +10,7 @@ import authRoutes from "./routes/auth/index.js";
 import adminRoutes from "./routes/admin/index.js";
 import orgRoutes from "./routes/org/index.js";
 import facultyRoutes from "./routes/faculty/index.js";
+import studentAssessmentRoutes from "./routes/assessments/index.js";
 import paymentRoutes from "./routes/payments/index.js";
 import subscriptionRoutes from "./routes/subscriptions/index.js";
 import razorpayWebhookRoute from "./routes/webhooks/razorpay.js";
@@ -120,6 +121,7 @@ export async function buildApp() {
   await app.register(adminRoutes, { prefix: "/admin" });
   await app.register(orgRoutes, { prefix: "/org" });
   await app.register(facultyRoutes, { prefix: "/faculty" });
+  await app.register(studentAssessmentRoutes, { prefix: "/assessments" });
   await app.register(paymentRoutes, { prefix: "/payments" });
   await app.register(subscriptionRoutes, { prefix: "/subscriptions" });
   await app.register(razorpayWebhookRoute, { prefix: "/webhooks" });
