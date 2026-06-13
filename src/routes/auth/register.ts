@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
+import { OrgRole } from "@prisma/client";
 import { registerSchema } from "../../schemas/auth.js";
+import { linkPreloadedSectionOnClaim } from "../../lib/sections.js";
 import { hashPassword } from "../../lib/passwords.js";
 import { generateToken, hashToken } from "../../lib/tokens.js";
 import { sendVerificationEmail } from "../../lib/email.js";
@@ -75,14 +77,20 @@ export default async function registerRoute(app: FastifyInstance) {
               isVerified: true,
               isActive: true,
               isOrgAdmin: preloaded.isOrgAdmin,
+              orgRole: preloaded.orgRole,
             },
+            // Escalate to campus admin if the preloaded record says so; never
+            // silently demote on re-claim (so orgRole stays in lockstep).
             update: {
               isVerified: true,
               isActive: true,
               isOrgAdmin: preloaded.isOrgAdmin || undefined,
+              orgRole: preloaded.isOrgAdmin ? OrgRole.CAMPUS_ADMIN : undefined,
             },
           }),
         ]);
+        // Materialize the cohort link a roster CSV recorded on the preload.
+        await linkPreloadedSectionOnClaim(app.prisma, preloaded, user.id);
       }
 
       // Generate email verification token

@@ -11,8 +11,15 @@ export type AdminAction =
   | "MEMBER_REVOKE"
   | "MEMBER_REINSTATE"
   | "ORG_ADMIN_BULK_ADD"
+  | "ORG_STAFF_BULK_ADD"
   | "ORG_ADMIN_GRANT"
   | "ORG_ADMIN_REVOKE"
+  | "ORG_ROLE_CHANGE"
+  | "SECTION_CREATE"
+  | "SECTION_BULK_UPLOAD"
+  | "SECTION_ASSIGN"
+  | "SECTION_UNASSIGN"
+  | "SECTION_STUDENTS_ADD"
   | "PREMIUM_GRANT"
   | "PREMIUM_REVOKE"
   | "USER_SUSPEND"
@@ -23,6 +30,7 @@ export type AdminEntityType =
   | "ORGANIZATION"
   | "PRELOADED_STUDENT"
   | "ORGANIZATION_MEMBER"
+  | "SECTION"
   | "USER";
 
 export interface RecordAdminActionInput {

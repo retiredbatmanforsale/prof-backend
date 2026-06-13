@@ -1,6 +1,11 @@
 import type { FastifyInstance } from "fastify";
-import type { PrismaClient } from "@prisma/client";
+import { OrgRole, type PrismaClient } from "@prisma/client";
 import { generateToken, hashToken } from "./tokens.js";
+import {
+  activeOrgWhere,
+  campusAdminMembershipWhere,
+  FACULTY_TIER_ROLES,
+} from "./orgRole.js";
 import type { JWTPayload } from "../types/index.js";
 
 const ACCESS_TOKEN_EXPIRY = "15m";
@@ -136,15 +141,9 @@ export async function getOrgAdminInfo(
   const membership = await prisma.organizationMember.findFirst({
     where: {
       userId,
-      isOrgAdmin: true,
+      ...campusAdminMembershipWhere,
       isActive: true,
-      organization: {
-        isActive: true,
-        OR: [{ accessStartDate: null }, { accessStartDate: { lte: now } }],
-        AND: {
-          OR: [{ accessEndDate: null }, { accessEndDate: { gte: now } }],
-        },
-      },
+      organization: activeOrgWhere(now),
     },
     select: { organization: { select: { id: true, name: true } } },
   });
@@ -156,6 +155,112 @@ export async function getOrgAdminInfo(
     isOrgAdmin: true,
     organizationId: membership.organization.id,
     organizationName: membership.organization.name,
+  };
+}
+
+/**
+ * Resolve a user's faculty-tier membership (FACULTY/LAB_ASSISTANT/TA) for the
+ * /faculty surface. Only counts an active membership of an active, in-window
+ * org. Returns the OrganizationMember id so section queries can scope to the
+ * staff member's assignments. Campus admins are NOT faculty — they use /org.
+ */
+export async function getFacultyInfo(
+  prisma: PrismaClient,
+  userId: string
+): Promise<{
+  isFaculty: boolean;
+  memberId: string | null;
+  organizationId: string | null;
+  organizationName: string | null;
+}> {
+  const now = new Date();
+  const membership = await prisma.organizationMember.findFirst({
+    where: {
+      userId,
+      isActive: true,
+      orgRole: { in: [...FACULTY_TIER_ROLES] },
+      organization: activeOrgWhere(now),
+    },
+    select: {
+      id: true,
+      organization: { select: { id: true, name: true } },
+    },
+  });
+
+  if (!membership) {
+    return {
+      isFaculty: false,
+      memberId: null,
+      organizationId: null,
+      organizationName: null,
+    };
+  }
+  return {
+    isFaculty: true,
+    memberId: membership.id,
+    organizationId: membership.organization.id,
+    organizationName: membership.organization.name,
+  };
+}
+
+/**
+ * Resolve the per-org tier to stamp into a user's JWT: the most-privileged
+ * active membership in an active, in-window org. Campus admin wins; otherwise
+ * a faculty-tier membership (FACULTY/LAB_ASSISTANT/TA) is surfaced so the
+ * frontend can route teaching staff to their dashboard. Returns nulls for a
+ * plain student or a user who staffs/admins no org.
+ *
+ * NOTE: faculty are scoped to specific sections — that scoping lives in a
+ * separate (not-yet-built) Section model. This only identifies the tier; it
+ * does not grant the /org admin dashboard (requireOrgAdmin still gates on
+ * campus admin via getOrgAdminInfo).
+ */
+export async function getOrgTokenScope(
+  prisma: PrismaClient,
+  userId: string
+): Promise<{
+  orgRole: OrgRole | null;
+  organizationId: string | null;
+  organizationName: string | null;
+  isOrgAdmin: boolean;
+}> {
+  const admin = await getOrgAdminInfo(prisma, userId);
+  if (admin.isOrgAdmin) {
+    return {
+      orgRole: OrgRole.CAMPUS_ADMIN,
+      organizationId: admin.organizationId,
+      organizationName: admin.organizationName,
+      isOrgAdmin: true,
+    };
+  }
+
+  const now = new Date();
+  const staff = await prisma.organizationMember.findFirst({
+    where: {
+      userId,
+      isActive: true,
+      orgRole: { in: [...FACULTY_TIER_ROLES] },
+      organization: activeOrgWhere(now),
+    },
+    select: {
+      orgRole: true,
+      organization: { select: { id: true, name: true } },
+    },
+  });
+
+  if (!staff) {
+    return {
+      orgRole: null,
+      organizationId: null,
+      organizationName: null,
+      isOrgAdmin: false,
+    };
+  }
+  return {
+    orgRole: staff.orgRole,
+    organizationId: staff.organization.id,
+    organizationName: staff.organization.name,
+    isOrgAdmin: false,
   };
 }
 
@@ -181,7 +286,7 @@ export async function issueTokens(
     prisma,
     user.id
   );
-  const orgAdmin = await getOrgAdminInfo(prisma, user.id);
+  const orgScope = await getOrgTokenScope(prisma, user.id);
 
   const payload: JWTPayload = {
     userId: user.id,
@@ -190,10 +295,11 @@ export async function issueTokens(
     hasAccess,
     accessType,
     // Prefer the access-derived org name; fall back to the org the user
-    // administers so an org admin always sees their org name in the token.
-    organizationName: organizationName ?? orgAdmin.organizationName,
-    organizationId: orgAdmin.organizationId,
-    isOrgAdmin: orgAdmin.isOrgAdmin,
+    // administers/staffs so an org member always sees their org name in the token.
+    organizationName: organizationName ?? orgScope.organizationName,
+    organizationId: orgScope.organizationId,
+    isOrgAdmin: orgScope.isOrgAdmin,
+    orgRole: orgScope.orgRole,
   };
 
   const accessToken = app.jwt.sign(payload, {

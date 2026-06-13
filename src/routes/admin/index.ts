@@ -3,6 +3,7 @@ import { authenticate } from "../../hooks/auth.js";
 import { requireAdmin } from "../../hooks/admin.js";
 import organizationRoutes from "./organizations.js";
 import studentRoutes from "./students.js";
+import staffRoutes from "./staff.js";
 import refundRoutes from "./refunds.js";
 import dashboardRoutes from "./dashboard.js";
 import usersDirectoryRoutes from "./users.js";
@@ -16,6 +17,7 @@ export default async function adminRoutes(app: FastifyInstance) {
 
   await app.register(organizationRoutes);
   await app.register(studentRoutes);
+  await app.register(staffRoutes);
   await app.register(refundRoutes);
   await app.register(dashboardRoutes);
   await app.register(usersDirectoryRoutes);

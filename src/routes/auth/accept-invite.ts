@@ -1,6 +1,8 @@
 import type { FastifyInstance } from "fastify";
+import { OrgRole } from "@prisma/client";
 import { acceptInviteSchema } from "../../schemas/admin.js";
 import { hashPassword } from "../../lib/passwords.js";
+import { linkPreloadedSectionOnClaim } from "../../lib/sections.js";
 
 export default async function acceptInviteRoute(app: FastifyInstance) {
   // GET /auth/invite-info?token=xxx — Validate token and return info for form
@@ -142,13 +144,16 @@ export default async function acceptInviteRoute(app: FastifyInstance) {
               isVerified: true,
               isActive: true,
               isOrgAdmin: preloadedStudent.isOrgAdmin,
+              orgRole: preloadedStudent.orgRole,
             },
             // Escalate to org admin if the preloaded record says so; never
-            // silently demote an existing admin on re-claim.
+            // silently demote an existing admin on re-claim (keeps orgRole and
+            // isOrgAdmin in lockstep).
             update: {
               isVerified: true,
               isActive: true,
               isOrgAdmin: preloadedStudent.isOrgAdmin || undefined,
+              orgRole: preloadedStudent.isOrgAdmin ? OrgRole.CAMPUS_ADMIN : undefined,
             },
           }),
           app.prisma.preloadedStudent.update({
@@ -160,8 +165,15 @@ export default async function acceptInviteRoute(app: FastifyInstance) {
             data: { used: true },
           }),
         ]);
+        // Materialize the cohort link a roster CSV recorded on the preload.
+        await linkPreloadedSectionOnClaim(
+          app.prisma,
+          preloadedStudent,
+          existingUser.id
+        );
       } else {
         // Create new user + membership in a transaction
+        let newUserId = "";
         await app.prisma.$transaction(async (tx) => {
           const user = await tx.user.create({
             data: {
@@ -172,6 +184,7 @@ export default async function acceptInviteRoute(app: FastifyInstance) {
               role: "USER",
             },
           });
+          newUserId = user.id;
 
           await tx.organizationMember.create({
             data: {
@@ -180,6 +193,7 @@ export default async function acceptInviteRoute(app: FastifyInstance) {
               isVerified: true,
               isActive: true,
               isOrgAdmin: preloadedStudent.isOrgAdmin,
+              orgRole: preloadedStudent.orgRole,
             },
           });
 
@@ -193,6 +207,12 @@ export default async function acceptInviteRoute(app: FastifyInstance) {
             data: { used: true },
           });
         });
+        // Materialize the cohort link a roster CSV recorded on the preload.
+        await linkPreloadedSectionOnClaim(
+          app.prisma,
+          preloadedStudent,
+          newUserId
+        );
       }
 
       return reply.send({ success: true });

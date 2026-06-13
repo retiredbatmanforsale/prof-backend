@@ -1,10 +1,12 @@
 import type { FastifyInstance } from "fastify";
+import { OrgRole } from "@prisma/client";
 import { parse } from "csv-parse/sync";
 import { addStudentSchema } from "../../schemas/admin.js";
 import { generateToken } from "../../lib/tokens.js";
 import { sendInvitationEmail } from "../../lib/email.js";
 import { recordAdminAction } from "../../lib/audit.js";
 import { revokeAllUserTokens } from "../../lib/session.js";
+import { isCampusAdminRole } from "../../lib/orgRole.js";
 
 const INVITATION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -312,8 +314,13 @@ export default async function studentRoutes(app: FastifyInstance) {
             where: {
               organizationId_email: { organizationId: org.id, email },
             },
-            create: { email, organizationId: org.id, isOrgAdmin: true },
-            update: { isOrgAdmin: true },
+            create: {
+              email,
+              organizationId: org.id,
+              isOrgAdmin: true,
+              orgRole: OrgRole.CAMPUS_ADMIN,
+            },
+            update: { isOrgAdmin: true, orgRole: OrgRole.CAMPUS_ADMIN },
           });
 
           // Already joined? Promote the live membership now so the dashboard
@@ -325,7 +332,7 @@ export default async function studentRoutes(app: FastifyInstance) {
                 userId: student.claimedByUserId,
                 organizationId: org.id,
               },
-              data: { isOrgAdmin: true },
+              data: { isOrgAdmin: true, orgRole: OrgRole.CAMPUS_ADMIN },
             });
             results.promoted++;
             continue;
@@ -454,17 +461,39 @@ export default async function studentRoutes(app: FastifyInstance) {
   // and surfaces in their JWT on the next refresh.
   app.patch<{
     Params: { orgId: string; id: string };
-    Body: { isActive?: boolean; isOrgAdmin?: boolean };
+    Body: { isActive?: boolean; isOrgAdmin?: boolean; orgRole?: OrgRole };
   }>(
     "/organizations/:orgId/members/:id",
     {
       config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
     },
     async (request, reply) => {
-      const { isActive, isOrgAdmin } = request.body ?? {};
-      if (typeof isActive !== "boolean" && typeof isOrgAdmin !== "boolean") {
+      const { isActive, isOrgAdmin, orgRole } = request.body ?? {};
+
+      // `orgRole` is the canonical tier; the legacy `isOrgAdmin` boolean is
+      // still accepted and mapped (true → CAMPUS_ADMIN, false → STUDENT).
+      // When both are sent, `orgRole` wins. Resolve the target tier (and keep
+      // the boolean in lockstep) before touching the DB.
+      if (orgRole !== undefined && !Object.values(OrgRole).includes(orgRole)) {
         return reply.status(400).send({
-          error: "Body must include boolean `isActive` and/or `isOrgAdmin`",
+          error: `Invalid orgRole. Expected one of: ${Object.values(OrgRole).join(", ")}`,
+        });
+      }
+      const roleProvided = orgRole !== undefined || typeof isOrgAdmin === "boolean";
+      const targetRole: OrgRole | undefined =
+        orgRole !== undefined
+          ? orgRole
+          : typeof isOrgAdmin === "boolean"
+            ? isOrgAdmin
+              ? OrgRole.CAMPUS_ADMIN
+              : OrgRole.STUDENT
+            : undefined;
+      const targetIsOrgAdmin =
+        targetRole !== undefined ? isCampusAdminRole(targetRole) : undefined;
+
+      if (typeof isActive !== "boolean" && !roleProvided) {
+        return reply.status(400).send({
+          error: "Body must include boolean `isActive` and/or `orgRole` (or legacy `isOrgAdmin`)",
         });
       }
 
@@ -483,13 +512,18 @@ export default async function studentRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "Member not found" });
       }
 
-      // Only persist dimensions that actually change.
-      const data: { isActive?: boolean; isOrgAdmin?: boolean } = {};
+      // Only persist dimensions that actually change. orgRole and isOrgAdmin
+      // move together so the legacy boolean never drifts from the canonical tier.
+      const data: { isActive?: boolean; isOrgAdmin?: boolean; orgRole?: OrgRole } = {};
       if (typeof isActive === "boolean" && isActive !== member.isActive) {
         data.isActive = isActive;
       }
-      if (typeof isOrgAdmin === "boolean" && isOrgAdmin !== member.isOrgAdmin) {
-        data.isOrgAdmin = isOrgAdmin;
+      const roleChanged =
+        roleProvided &&
+        (targetRole !== member.orgRole || targetIsOrgAdmin !== member.isOrgAdmin);
+      if (roleChanged) {
+        data.orgRole = targetRole;
+        data.isOrgAdmin = targetIsOrgAdmin;
       }
 
       if (Object.keys(data).length === 0) {
@@ -499,6 +533,7 @@ export default async function studentRoutes(app: FastifyInstance) {
             id: member.id,
             isActive: member.isActive,
             isOrgAdmin: member.isOrgAdmin,
+            orgRole: member.orgRole,
             user: member.user,
           },
           unchanged: true,
@@ -539,17 +574,26 @@ export default async function studentRoutes(app: FastifyInstance) {
         });
       }
 
-      if (data.isOrgAdmin !== undefined) {
+      if (roleChanged) {
+        const adminFlipped = targetIsOrgAdmin !== member.isOrgAdmin;
         await recordAdminAction({
           prisma: app.prisma,
           actor: request.currentUser!,
-          action: data.isOrgAdmin ? "ORG_ADMIN_GRANT" : "ORG_ADMIN_REVOKE",
+          // Preserve the grant/revoke actions when campus-admin status flips;
+          // a pure faculty-tier change (no admin flip) is its own action.
+          action: adminFlipped
+            ? targetIsOrgAdmin
+              ? "ORG_ADMIN_GRANT"
+              : "ORG_ADMIN_REVOKE"
+            : "ORG_ROLE_CHANGE",
           entityType: "ORGANIZATION_MEMBER",
           entityId: member.id,
           metadata: {
             ...baseMeta,
+            previousOrgRole: member.orgRole,
+            newOrgRole: targetRole,
             previousIsOrgAdmin: member.isOrgAdmin,
-            newIsOrgAdmin: data.isOrgAdmin,
+            newIsOrgAdmin: targetIsOrgAdmin,
           },
           log: request.log,
         });
@@ -561,6 +605,7 @@ export default async function studentRoutes(app: FastifyInstance) {
           id: updated.id,
           isActive: updated.isActive,
           isOrgAdmin: updated.isOrgAdmin,
+          orgRole: updated.orgRole,
           user: member.user,
         },
       });

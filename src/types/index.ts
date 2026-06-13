@@ -1,4 +1,4 @@
-import type { Role } from "@prisma/client";
+import type { Role, OrgRole } from "@prisma/client";
 
 export interface JWTPayload {
   userId: string;
@@ -13,6 +13,11 @@ export interface JWTPayload {
   // token alone for authorization.
   organizationId: string | null;
   isOrgAdmin: boolean;
+  // Canonical per-org tier for `organizationId`. CAMPUS_ADMIN mirrors
+  // isOrgAdmin=true; FACULTY/LAB_ASSISTANT/TA let the frontend route staff to
+  // their (section-scoped) dashboard; null when the user administers/staffs no
+  // org. The backend guard re-checks the DB and never trusts this alone.
+  orgRole: OrgRole | null;
 }
 
 export interface GoogleUserPayload {
@@ -31,6 +36,14 @@ declare module "fastify" {
     orgAdminContext?: {
       organizationId: string;
       organizationName: string;
+    };
+    // Set by the requireFaculty hook after an authoritative DB check. Faculty
+    // routes read memberId to scope queries to the staff member's assigned
+    // sections (a faculty member sees only those).
+    facultyContext?: {
+      organizationId: string;
+      organizationName: string;
+      memberId: string;
     };
   }
 }

@@ -13,6 +13,20 @@ enum Role {
   USER
 }
 
+// Per-organization access tier. Distinct from the platform-wide `Role`
+// (which governs the global /admin surface). One tier per member — these
+// are mutually exclusive, which is why this is a single enum column rather
+// than a fan of booleans. STUDENT is the default member; CAMPUS_ADMIN has
+// full university visibility (the role the legacy `isOrgAdmin` boolean
+// encoded); FACULTY/LAB_ASSISTANT/TA are staff scoped to assigned sections.
+enum OrgRole {
+  STUDENT
+  CAMPUS_ADMIN
+  FACULTY
+  LAB_ASSISTANT
+  TA
+}
+
 enum PlanType {
   MONTHLY
   QUARTERLY
@@ -111,6 +125,7 @@ model Organization {
 
   members           OrganizationMember[]
   preloadedStudents PreloadedStudent[]
+  sections          Section[]
 
   @@map("organizations")
 }
@@ -124,16 +139,82 @@ model OrganizationMember {
   // When true, this member can view their organization's consolidated
   // metrics dashboard (/org/*). Distinct from the global Role.ADMIN, which
   // governs the platform-wide /admin surface. Toggled by a platform admin.
+  // DEPRECATED in favor of `orgRole` (CAMPUS_ADMIN). Kept during the
+  // transition so existing read sites keep working; backfilled from it and
+  // dropped once all callers read `orgRole`.
   isOrgAdmin     Boolean  @default(false)
+  // Per-org access tier — see OrgRole. CAMPUS_ADMIN == legacy isOrgAdmin.
+  orgRole        OrgRole  @default(STUDENT)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   expiryNotices    ExpiryNoticeLog[]
+  // Cohort membership (as a learner) and teaching assignments (as staff).
+  sectionStudentOf   SectionStudent[]
+  sectionAssignments SectionAssignment[]
 
   @@unique([userId, organizationId])
   @@map("organization_members")
+}
+
+// ─── Sections (cohorts) ───────────────────────────────────────
+// A Section is a sub-group of an organization's members — the "cohort" the
+// university dashboard hierarchy operates on. Campus admins manage all
+// sections in their org; faculty/TA staff are assigned to specific sections
+// (SectionAssignment) and see only those. See SECTION_MODEL_PLAN.md.
+
+model Section {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  course         String?
+  createdViaCsv  Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization      Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  students          SectionStudent[]
+  staff             SectionAssignment[]
+  preloadedStudents PreloadedStudent[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("sections")
+}
+
+// Student membership in a section. Many-to-many (a student may sit in more
+// than one cohort). Keyed off OrganizationMember so section metrics reuse the
+// org member → userId resolution.
+model SectionStudent {
+  id                   String @id @default(cuid())
+  sectionId            String
+  organizationMemberId String
+
+  section Section            @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  member  OrganizationMember @relation(fields: [organizationMemberId], references: [id], onDelete: Cascade)
+
+  @@unique([sectionId, organizationMemberId])
+  @@index([organizationMemberId])
+  @@map("section_students")
+}
+
+// Teaching-staff assignment to a section — this is what scopes the faculty
+// (L2) view: a faculty member sees only the sections they're assigned to.
+model SectionAssignment {
+  id                   String   @id @default(cuid())
+  sectionId            String
+  organizationMemberId String
+  assignedAt           DateTime @default(now())
+  assignedByUserId     String?
+
+  section Section            @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  member  OrganizationMember @relation(fields: [organizationMemberId], references: [id], onDelete: Cascade)
+
+  @@unique([sectionId, organizationMemberId])
+  @@index([organizationMemberId])
+  @@map("section_assignments")
 }
 
 // One row per (member, kind, targetEndDate) so a heads-up is sent at most
@@ -164,12 +245,22 @@ model PreloadedStudent {
   // single add) before the person has an account. When they claim their
   // invite (or auto-claim on login), this seeds OrganizationMember.isOrgAdmin
   // so the org metrics dashboard (/org/*) becomes available to them.
+  // DEPRECATED in favor of `orgRole` (CAMPUS_ADMIN); see OrganizationMember.
   isOrgAdmin      Boolean  @default(false)
+  // Per-org tier set at upload time (campus-admin CSV → CAMPUS_ADMIN,
+  // faculty CSV → FACULTY/LAB_ASSISTANT/TA). Seeds OrganizationMember.orgRole
+  // when the invite is claimed.
+  orgRole         OrgRole  @default(STUDENT)
+  // Intended section (cohort), set when a roster CSV preloads this student
+  // before they have an account. On claim, the claim flow creates the
+  // SectionStudent link from this. Null for non-cohorted students.
+  sectionId       String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   claimedBy        User?             @relation("ClaimedBy", fields: [claimedByUserId], references: [id])
+  section          Section?          @relation(fields: [sectionId], references: [id], onDelete: SetNull)
   invitationTokens InvitationToken[]
 
   @@unique([organizationId, email])
