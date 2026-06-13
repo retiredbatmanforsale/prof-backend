@@ -27,6 +27,69 @@ enum OrgRole {
   TA
 }
 
+// Assessment lifecycle. DRAFT is faculty-only (editable, invisible to
+// students); PUBLISHED makes it visible to students in the assigned cohorts.
+// Evaluation/grading is out of scope for this slice — status never goes
+// past PUBLISHED here.
+enum AssessmentStatus {
+  DRAFT
+  PUBLISHED
+}
+
+// How an assessment question is sourced. CATALOG references an existing
+// practice problem by slug (the catalog lives in the frontend filesystem —
+// see prof-frontend/lib/practice/loader.ts); CUSTOM is authored inline and
+// stored in `content`. See the assessment domain notes in ASSESSMENT_ENGINE.md.
+enum QuestionKind {
+  CATALOG
+  CUSTOM
+}
+
+// Visibility tier — bound to the authoring role:
+//   PROF_GLOBAL  — created by Root Admin (platform role=ADMIN); visible to
+//                  independent users (no active org membership).
+//   ORGANIZATION — created by Campus Admin; visible to ALL students in the org.
+//   SECTION      — created by Faculty/TA; visible only to students in the
+//                  assigned section(s). This is the default (existing faculty-
+//                  authored assessments are section-scoped).
+// Student access resolves by persona (see the /assessments route):
+//   no org membership      → PROF_GLOBAL
+//   student in an org      → ORGANIZATION (their org) + SECTION (their sections)
+enum AssessmentVisibility {
+  PROF_GLOBAL
+  ORGANIZATION
+  SECTION
+}
+
+// Subject track of an assessment.
+enum AssessmentTrack {
+  DSA
+  AIML
+  MIXED
+}
+
+// How many times a student may enter an assessment.
+enum AttemptPolicy {
+  UNLIMITED
+  SINGLE
+  NONE
+}
+
+// In-test navigation between questions.
+enum NavigationMode {
+  FREE
+  SEQUENTIAL
+}
+
+// Lifecycle of a single student's attempt at an assessment. Keyed by userId so
+// both institutional and independent (PROF_GLOBAL) students are first-class.
+enum AttemptStatus {
+  IN_PROGRESS
+  EXITED
+  SUBMITTED
+  LOCKED
+}
+
 enum PlanType {
   MONTHLY
   QUARTERLY
@@ -79,6 +142,7 @@ model User {
   lessonProgress          LessonProgress[]
   lessonLikes             LessonLike[]
   streak                  UserStreak?
+  assessmentAttempts      AssessmentAttempt[]
 
   @@map("users")
 }
@@ -126,6 +190,7 @@ model Organization {
   members           OrganizationMember[]
   preloadedStudents PreloadedStudent[]
   sections          Section[]
+  assessments       Assessment[]
 
   @@map("organizations")
 }
@@ -154,6 +219,8 @@ model OrganizationMember {
   // Cohort membership (as a learner) and teaching assignments (as staff).
   sectionStudentOf   SectionStudent[]
   sectionAssignments SectionAssignment[]
+  // Assessments this member authored (as faculty).
+  assessmentsAuthored Assessment[] @relation("AssessmentAuthor")
 
   @@unique([userId, organizationId])
   @@map("organization_members")
@@ -178,6 +245,7 @@ model Section {
   students          SectionStudent[]
   staff             SectionAssignment[]
   preloadedStudents PreloadedStudent[]
+  assessmentAssignments AssessmentAssignment[]
 
   @@unique([organizationId, name])
   @@index([organizationId])
@@ -215,6 +283,126 @@ model SectionAssignment {
   @@unique([sectionId, organizationMemberId])
   @@index([organizationMemberId])
   @@map("section_assignments")
+}
+
+// ─── Assessments ──────────────────────────────────────────────
+// An Assessment is authored by a faculty OrganizationMember and assigned to
+// one or more Sections (cohorts) the author teaches. Students in those
+// cohorts see it once it is PUBLISHED. Evaluation, scoring, plagiarism and
+// code execution are intentionally out of scope for this slice — questions
+// are stored but never run or graded. See ASSESSMENT_ENGINE.md.
+
+model Assessment {
+  id                String           @id @default(cuid())
+  organizationId    String
+  // The faculty OrganizationMember who authored this. Tying to the member
+  // (not the User) keeps authorship inside the org boundary, mirroring how
+  // sections are keyed.
+  createdByMemberId String
+  title             String
+  description       String?
+  status            AssessmentStatus @default(DRAFT)
+  // PROF_GLOBAL / ORGANIZATION / SECTION — drives which student persona can see
+  // it and which role authored it. Defaults to SECTION (faculty-authored).
+  visibility        AssessmentVisibility @default(SECTION)
+  // Authoring metadata + in-test rules (all additive, sensible defaults so
+  // existing rows are unaffected).
+  track             AssessmentTrack  @default(MIXED)
+  attemptPolicy     AttemptPolicy    @default(UNLIMITED)
+  lateEntryAllowed  Boolean          @default(true)
+  shuffleQuestions  Boolean          @default(false)
+  navigationMode    NavigationMode   @default(FREE)
+  autoSubmit        Boolean          @default(true)
+  // Optional scheduling metadata surfaced to students; not enforced server-
+  // side in this slice (no timed-attempt engine yet).
+  durationMinutes   Int?
+  opensAt           DateTime?
+  dueAt             DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    OrganizationMember     @relation("AssessmentAuthor", fields: [createdByMemberId], references: [id])
+  questions    AssessmentQuestion[]
+  assignments  AssessmentAssignment[]
+  attempts     AssessmentAttempt[]
+
+  @@index([organizationId])
+  @@index([createdByMemberId])
+  @@map("assessments")
+}
+
+// One student's attempt at an assessment. Keyed by `userId` (NOT
+// OrganizationMember) so independent PROF_GLOBAL students — who have no org
+// membership — are first-class. `answers` holds the in-progress/submitted
+// response map; `remainingAttempts` + `status` drive the attempt-policy gate.
+model AssessmentAttempt {
+  id                String        @id @default(cuid())
+  assessmentId      String
+  userId            String
+  startedAt         DateTime      @default(now())
+  exitedAt          DateTime?
+  remainingAttempts Int           @default(1)
+  status            AttemptStatus @default(IN_PROGRESS)
+  answers           Json?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([assessmentId, userId])
+  @@index([userId])
+  @@map("assessment_attempts")
+}
+
+// One question within an assessment, ordered by `order` (0-based). A question
+// is either a CATALOG reference (catalogSlug into the frontend practice
+// catalog) or a CUSTOM question authored inline (body in `content`). The
+// backend never reaches into the catalog files — for CATALOG questions the
+// frontend supplies a lightweight snapshot (title/difficulty/topics) stored in
+// `content` so lists render server-side without the catalog.
+model AssessmentQuestion {
+  id           String       @id @default(cuid())
+  assessmentId String
+  order        Int
+  kind         QuestionKind
+  points       Int?
+  // CATALOG only: slug of the referenced practice problem.
+  catalogSlug  String?
+  // Display label / snapshot title (both kinds).
+  title        String?
+  // CUSTOM: the full question body ({ type, prompt, options, ... } — see
+  // src/schemas/assessment.ts). CATALOG: a small snapshot ({ difficulty,
+  // topics, ... }). Answer keys live here and are stripped from the
+  // student-facing serializer.
+  content      Json?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  @@index([assessmentId])
+  @@map("assessment_questions")
+}
+
+// Join: which cohorts (Sections) an assessment is assigned to. A faculty
+// member may only assign to sections they teach (enforced in the handler
+// against SectionAssignment). Students resolve visibility the inverse way:
+// SectionStudent → AssessmentAssignment → PUBLISHED Assessment.
+model AssessmentAssignment {
+  id                 String   @id @default(cuid())
+  assessmentId       String
+  sectionId          String
+  assignedByMemberId String?
+  assignedAt         DateTime @default(now())
+
+  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  section    Section    @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@unique([assessmentId, sectionId])
+  @@index([sectionId])
+  @@map("assessment_assignments")
 }
 
 // One row per (member, kind, targetEndDate) so a heads-up is sent at most

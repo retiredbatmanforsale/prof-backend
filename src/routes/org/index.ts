@@ -4,6 +4,8 @@ import { requireOrgAdmin } from "../../hooks/orgAdmin.js";
 import orgMetricsRoutes from "./metrics.js";
 import orgSectionsRoutes from "./sections.js";
 import orgMembersRoutes from "./members.js";
+import orgAssessmentRoutes from "./assessments.js";
+import orgAnalyticsRoutes from "./analytics.js";
 
 /**
  * Organization-admin surface (/org/*). Distinct from the platform-wide
@@ -17,4 +19,6 @@ export default async function orgRoutes(app: FastifyInstance) {
   await app.register(orgMetricsRoutes);
   await app.register(orgSectionsRoutes);
   await app.register(orgMembersRoutes);
+  await app.register(orgAssessmentRoutes);
+  await app.register(orgAnalyticsRoutes);
 }
