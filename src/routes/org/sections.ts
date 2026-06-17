@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { OrgRole } from "@prisma/client";
 import { parse } from "csv-parse/sync";
 import { computeSectionMetrics } from "../../lib/orgMetrics.js";
+import { isFacultyTierRole } from "../../lib/orgRole.js";
 import { recordAdminAction } from "../../lib/audit.js";
 import { generateToken } from "../../lib/tokens.js";
 import { sendInvitationEmail } from "../../lib/email.js";
@@ -158,8 +159,10 @@ export default async function orgSectionsRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "Section not found" });
       }
 
-      // The member must belong to the same org, and must be staff — assigning
-      // a plain student as teaching staff is a mistake, not a feature.
+      // The member must belong to the same org, and must be teaching staff.
+      // Only faculty-tier roles (FACULTY / LAB_ASSISTANT / TA) may teach a
+      // section — campus admins manage org-wide via /org and are NOT section
+      // staff; students are learners. Everything else is rejected.
       const member = await app.prisma.organizationMember.findFirst({
         where: { id: memberId, organizationId: ctx.organizationId },
         select: { id: true, orgRole: true },
@@ -169,9 +172,9 @@ export default async function orgSectionsRoutes(app: FastifyInstance) {
           .status(404)
           .send({ error: "Member not found in this organization" });
       }
-      if (member.orgRole === OrgRole.STUDENT) {
+      if (!isFacultyTierRole(member.orgRole)) {
         return reply.status(400).send({
-          error: "Only staff (campus admin / faculty / lab / TA) can be assigned to a section",
+          error: "Only teaching staff (faculty, lab assistant, or TA) can be assigned to a section",
         });
       }
 
