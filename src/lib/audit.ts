@@ -20,6 +20,10 @@ export type AdminAction =
   | "SECTION_ASSIGN"
   | "SECTION_UNASSIGN"
   | "SECTION_STUDENTS_ADD"
+  | "ASSESSMENT_CREATE"
+  | "ASSESSMENT_UPDATE"
+  | "ASSESSMENT_PUBLISH"
+  | "ASSESSMENT_DELETE"
   | "PREMIUM_GRANT"
   | "PREMIUM_REVOKE"
   | "USER_SUSPEND"
@@ -31,6 +35,7 @@ export type AdminEntityType =
   | "PRELOADED_STUDENT"
   | "ORGANIZATION_MEMBER"
   | "SECTION"
+  | "ASSESSMENT"
   | "USER";
 
 export interface RecordAdminActionInput {
