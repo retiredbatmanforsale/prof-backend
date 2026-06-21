@@ -8,7 +8,6 @@ import rateLimitPlugin from "./plugins/rate-limit.js";
 import multipartPlugin from "./plugins/multipart.js";
 import authRoutes from "./routes/auth/index.js";
 import adminRoutes from "./routes/admin/index.js";
-import orgRoutes from "./routes/org/index.js";
 import facultyRoutes from "./routes/faculty/index.js";
 import paymentRoutes from "./routes/payments/index.js";
 import subscriptionRoutes from "./routes/subscriptions/index.js";
@@ -16,6 +15,9 @@ import razorpayWebhookRoute from "./routes/webhooks/razorpay.js";
 import quizRoutes from "./routes/quiz/index.js";
 import tutorRoutes from "./routes/tutor/index.js";
 import progressRoutes from "./routes/progress/index.js";
+import practiceRoutes from "./routes/practice/index.js";
+import gradesRoutes from "./routes/grades/index.js";
+import rankingRoutes from "./routes/ranking/index.js";
 import lessonRoutes from "./routes/lessons/index.js";
 import streakRoutes from "./routes/streak/index.js";
 
@@ -118,7 +120,7 @@ export async function buildApp() {
   // Register routes
   await app.register(authRoutes, { prefix: "/auth" });
   await app.register(adminRoutes, { prefix: "/admin" });
-  await app.register(orgRoutes, { prefix: "/org" });
+  // Phase 7: the former /org runtime surface is merged into /faculty.
   await app.register(facultyRoutes, { prefix: "/faculty" });
   await app.register(paymentRoutes, { prefix: "/payments" });
   await app.register(subscriptionRoutes, { prefix: "/subscriptions" });
@@ -126,6 +128,9 @@ export async function buildApp() {
   await app.register(quizRoutes, { prefix: "/quiz" });
   await app.register(tutorRoutes, { prefix: "/tutor" });
   await app.register(progressRoutes, { prefix: "/progress" });
+  await app.register(practiceRoutes, { prefix: "/practice" });
+  await app.register(gradesRoutes, { prefix: "/grades" });
+  await app.register(rankingRoutes, { prefix: "/ranking" });
   await app.register(lessonRoutes, { prefix: "/lessons" });
   await app.register(streakRoutes, { prefix: "/streak" });
 

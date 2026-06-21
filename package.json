@@ -13,6 +13,7 @@
     "db:studio": "prisma studio",
     "db:generate": "prisma generate",
     "db:seed": "tsx prisma/seed.ts",
+    "db:seed-university": "tsx --env-file=.env prisma/seed-university.ts",
     "db:seed-plans": "tsx --env-file=.env prisma/seed-plans.ts",
     "job:expiry-notices": "tsx --env-file=.env scripts/send-expiry-notices.ts"
   },

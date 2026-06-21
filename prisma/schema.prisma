@@ -140,6 +140,8 @@ model User {
   claimedPreloadedRecords PreloadedStudent[] @relation("ClaimedBy")
   quizAttempts            QuizAttempt[]
   lessonProgress          LessonProgress[]
+  practiceAttempts        PracticeAttempt[]
+  gradeEntries            GradeEntry[]
   lessonLikes             LessonLike[]
   streak                  UserStreak?
   assessmentAttempts      AssessmentAttempt[]
@@ -221,6 +223,8 @@ model OrganizationMember {
   sectionAssignments SectionAssignment[]
   // Assessments this member authored (as faculty).
   assessmentsAuthored Assessment[] @relation("AssessmentAuthor")
+  // Grade entries this member recorded (Phase 5 gradebook).
+  enteredGradeEntries GradeEntry[] @relation("GradeEntryEnteredBy")
 
   @@unique([userId, organizationId])
   @@map("organization_members")
@@ -245,7 +249,8 @@ model Section {
   students          SectionStudent[]
   staff             SectionAssignment[]
   preloadedStudents PreloadedStudent[]
-  assessmentAssignments AssessmentAssignment[]
+  assessments       Assessment[] // assessments owned directly by this cohort (Phase 2)
+  gradeComponents   GradeComponent[] // Phase 5: gradebook components for this cohort
 
   @@unique([organizationId, name])
   @@index([organizationId])
@@ -299,6 +304,9 @@ model Assessment {
   // (not the User) keeps authorship inside the org boundary, mirroring how
   // sections are keyed.
   createdByMemberId String
+  // The single cohort that owns this assessment (Phase 2). The legacy
+  // AssessmentAssignment bridge was dropped in Phase 8.
+  sectionId         String?
   title             String
   description       String?
   status            AssessmentStatus @default(DRAFT)
@@ -323,13 +331,81 @@ model Assessment {
 
   organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   createdBy    OrganizationMember     @relation("AssessmentAuthor", fields: [createdByMemberId], references: [id])
+  section      Section?               @relation(fields: [sectionId], references: [id], onDelete: SetNull)
   questions    AssessmentQuestion[]
-  assignments  AssessmentAssignment[]
   attempts     AssessmentAttempt[]
+  gradeComponents GradeComponent[] // Phase 5: AUTO grade components sourced from this assessment
 
   @@index([organizationId])
   @@index([createdByMemberId])
+  @@index([sectionId])
   @@map("assessments")
+}
+
+// ─── Phase 5: Gradebook ───────────────────────────────────────
+// The final academic grading layer. A GradeComponent is one weighted column of
+// a cohort's gradebook (e.g. "Mid-Sem" 30%, "Viva" 10%). A GradeEntry is one
+// student's score in one component. Scores flow in two ways:
+//   AUTO   — pulled from a linked assessment's attempts once assessment grading
+//            exists (assessmentId set). Forward-compatible: the grading engine
+//            isn't built yet, so AUTO components are entered manually for now.
+//   MANUAL — faculty types the score (viva / project / lab exams / internals).
+// Total % and letter grade are DERIVED on read (lib/university/gradebook.ts),
+// never stored — single source of truth shared by faculty + student views.
+
+enum GradeComponentType {
+  MIDSEM
+  ENDSEM
+  QUIZ
+  VIVA
+  PROJECT
+  LAB
+}
+
+enum GradeSource {
+  AUTO
+  MANUAL
+}
+
+model GradeComponent {
+  id        String             @id @default(cuid())
+  sectionId String
+  name      String
+  type      GradeComponentType
+  maxMarks  Float              @default(100)
+  weight    Float              @default(0)
+  // Optional: AUTO components source their scores from this assessment's
+  // attempts. Null = a purely manual component (viva, project, lab exam…).
+  assessmentId String?
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  section    Section      @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  assessment Assessment?  @relation(fields: [assessmentId], references: [id], onDelete: SetNull)
+  entries    GradeEntry[]
+
+  @@index([sectionId])
+  @@map("grade_components")
+}
+
+model GradeEntry {
+  id                String      @id @default(cuid())
+  componentId       String
+  studentId         String // User.id of the graded student
+  score             Float
+  // OrganizationMember who recorded it (faculty/admin). Null for AUTO entries.
+  enteredByMemberId String?
+  source            GradeSource @default(MANUAL)
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  component GradeComponent      @relation(fields: [componentId], references: [id], onDelete: Cascade)
+  student   User                @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  enteredBy OrganizationMember? @relation("GradeEntryEnteredBy", fields: [enteredByMemberId], references: [id], onDelete: SetNull)
+
+  @@unique([componentId, studentId])
+  @@index([studentId])
+  @@map("grade_entries")
 }
 
 // One student's attempt at an assessment. Keyed by `userId` (NOT
@@ -345,6 +421,17 @@ model AssessmentAttempt {
   remainingAttempts Int           @default(1)
   status            AttemptStatus @default(IN_PROGRESS)
   answers           Json?
+  // ─── Phase 6: scoring (additive) ───
+  // score is the final awarded total (auto + any faculty review marks); it is
+  // provisional while pendingReview is true (auto portion only) and final once
+  // gradedAt is set. maxScore is the sum of all question points. reviewMarks
+  // holds faculty-assigned marks for non-auto questions ({ questionId: marks }).
+  score         Float?
+  maxScore      Float?
+  submittedAt   DateTime?
+  gradedAt      DateTime?
+  pendingReview Boolean   @default(false)
+  reviewMarks   Json?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -386,24 +473,9 @@ model AssessmentQuestion {
   @@map("assessment_questions")
 }
 
-// Join: which cohorts (Sections) an assessment is assigned to. A faculty
-// member may only assign to sections they teach (enforced in the handler
-// against SectionAssignment). Students resolve visibility the inverse way:
-// SectionStudent → AssessmentAssignment → PUBLISHED Assessment.
-model AssessmentAssignment {
-  id                 String   @id @default(cuid())
-  assessmentId       String
-  sectionId          String
-  assignedByMemberId String?
-  assignedAt         DateTime @default(now())
-
-  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
-  section    Section    @relation(fields: [sectionId], references: [id], onDelete: Cascade)
-
-  @@unique([assessmentId, sectionId])
-  @@index([sectionId])
-  @@map("assessment_assignments")
-}
+// Phase 8: the AssessmentAssignment join table was removed. An assessment is
+// owned by exactly one cohort via Assessment.sectionId; students resolve
+// visibility by their section (or ORGANIZATION / PROF_GLOBAL scope).
 
 // One row per (member, kind, targetEndDate) so a heads-up is sent at most
 // once per upcoming expiry. If an admin extends accessEndDate, the new date
@@ -552,12 +624,47 @@ model LessonProgress {
   createdAt  DateTime       @default(now())
   updatedAt  DateTime       @updatedAt
 
+  // ─── Phase 3: robust lesson tracking (additive) ───
+  // A lesson is "completed" only when the student explicitly completes it AND
+  // met the meaningful-engagement gate (min time + min scroll) — opening a
+  // lesson is never enough. completedAt is the authoritative completion marker
+  // (status flips to READ at the same time). completionPercent is the deepest
+  // scroll depth reached (0–100). timeSpentSeconds accumulates from heartbeats.
+  startedAt         DateTime?
+  completedAt       DateTime?
+  timeSpentSeconds  Int       @default(0)
+  completionPercent Int       @default(0)
+  lastActiveAt      DateTime?
+
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, lessonId])
   @@index([userId])
   @@index([lessonId])
   @@map("lesson_progress")
+}
+
+// Phase 3: thin per-(user, problem) practice tracking. Coding labs run in the
+// browser; the solver POSTs here on run (attempt) and on all-tests-pass (solve).
+// problemSlug matches the practice catalog slug / lessonPracticeMap ids, so
+// faculty + the roadmap can join solved labs back to lessons. Deliberately
+// minimal — no submissions/history, just the attempt count and solved flag.
+model PracticeAttempt {
+  id          String    @id @default(cuid())
+  userId      String
+  problemSlug String
+  attempts    Int       @default(0)
+  solved      Boolean   @default(false)
+  solvedAt    DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, problemSlug])
+  @@index([userId])
+  @@index([problemSlug])
+  @@map("practice_attempts")
 }
 
 // One row per (user, lessonSlug) — a like is a binary signal. Unique

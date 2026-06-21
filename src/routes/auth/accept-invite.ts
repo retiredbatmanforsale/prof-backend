@@ -166,11 +166,18 @@ export default async function acceptInviteRoute(app: FastifyInstance) {
           }),
         ]);
         // Materialize the cohort link a roster CSV recorded on the preload.
-        await linkPreloadedSectionOnClaim(
+        const linkResult = await linkPreloadedSectionOnClaim(
           app.prisma,
           preloadedStudent,
           existingUser.id
         );
+        if (linkResult === "rejected-other-cohort") {
+          return reply.code(409).send({
+            error: "ALREADY_IN_COHORT",
+            message:
+              "You already belong to a cohort. A student can be in only one cohort.",
+          });
+        }
       } else {
         // Create new user + membership in a transaction
         let newUserId = "";
@@ -208,11 +215,20 @@ export default async function acceptInviteRoute(app: FastifyInstance) {
           });
         });
         // Materialize the cohort link a roster CSV recorded on the preload.
-        await linkPreloadedSectionOnClaim(
+        // (A brand-new user can't already be in a cohort, but we keep the guard
+        // symmetric.)
+        const linkResult = await linkPreloadedSectionOnClaim(
           app.prisma,
           preloadedStudent,
           newUserId
         );
+        if (linkResult === "rejected-other-cohort") {
+          return reply.code(409).send({
+            error: "ALREADY_IN_COHORT",
+            message:
+              "You already belong to a cohort. A student can be in only one cohort.",
+          });
+        }
       }
 
       return reply.send({ success: true });

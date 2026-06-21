@@ -1,5 +1,5 @@
 import { Prisma, QuestionKind } from "@prisma/client";
-import type { AssessmentQuestion, Assessment } from "@prisma/client";
+import type { AssessmentQuestion } from "@prisma/client";
 import type { QuestionInput } from "../schemas/assessment.js";
 
 /**
@@ -51,30 +51,6 @@ export function serializeQuestionForStudent(q: AssessmentQuestion) {
     catalogSlug: q.catalogSlug,
     title: q.title,
     content: safeContent,
-  };
-}
-
-type AssessmentWithCounts = Assessment & {
-  _count?: { questions: number; assignments: number };
-};
-
-/** List-item summary for both faculty and student lists. */
-export function serializeAssessmentSummary(a: AssessmentWithCounts) {
-  return {
-    id: a.id,
-    title: a.title,
-    description: a.description,
-    status: a.status,
-    visibility: a.visibility,
-    track: a.track,
-    attemptPolicy: a.attemptPolicy,
-    durationMinutes: a.durationMinutes,
-    opensAt: a.opensAt?.toISOString() ?? null,
-    dueAt: a.dueAt?.toISOString() ?? null,
-    questionCount: a._count?.questions ?? 0,
-    cohortCount: a._count?.assignments ?? 0,
-    createdAt: a.createdAt.toISOString(),
-    updatedAt: a.updatedAt.toISOString(),
   };
 }
 
