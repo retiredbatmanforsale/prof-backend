@@ -14,14 +14,13 @@ export interface StudentLessonTracking {
   email: string;
   completedLessonIds: string[];
   inProgressLessonIds: string[];
-  /** Most recently active lesson that isn't completed (best guess at "current"). */
-  currentLessonId: string | null;
+  /** Most recently COMPLETED lesson — the student's last finished checkpoint. */
+  lastCompletedLessonId: string | null;
   completedCount: number;
   attemptedProblemSlugs: string[];
   solvedProblemSlugs: string[];
   solvedCount: number;
   attemptedCount: number;
-  totalTimeSeconds: number;
   lastActiveAt: string | null;
   /** Phase 4: how many of the cohort's published assessments this student
    *  ATTEMPTED (presence of an AssessmentAttempt — grading irrelevant). */
@@ -87,7 +86,6 @@ export async function computeSectionLessonTracking(
         lessonId: true,
         status: true,
         completedAt: true,
-        timeSpentSeconds: true,
         lastActiveAt: true,
         updatedAt: true,
       },
@@ -112,8 +110,8 @@ export async function computeSectionLessonTracking(
 
   type Acc = {
     completed: string[];
+    lastCompleted: { lessonId: string; at: Date } | null;
     inProgress: { lessonId: string; at: Date }[];
-    timeSpent: number;
     lastActive: Date | null;
     attempted: string[];
     solved: string[];
@@ -122,8 +120,8 @@ export async function computeSectionLessonTracking(
   for (const id of userIds) {
     byUser.set(id, {
       completed: [],
+      lastCompleted: null,
       inProgress: [],
-      timeSpent: 0,
       lastActive: null,
       attempted: [],
       solved: [],
@@ -133,11 +131,14 @@ export async function computeSectionLessonTracking(
   for (const r of progressRows) {
     const acc = byUser.get(r.userId);
     if (!acc) continue;
-    acc.timeSpent += r.timeSpentSeconds ?? 0;
     const active = r.lastActiveAt ?? r.updatedAt;
     if (active && (!acc.lastActive || active > acc.lastActive)) acc.lastActive = active;
     if (r.completedAt || r.status === "READ" || r.status === "MASTERED") {
       acc.completed.push(r.lessonId);
+      const at = r.completedAt ?? active ?? r.updatedAt;
+      if (at && (!acc.lastCompleted || at > acc.lastCompleted.at)) {
+        acc.lastCompleted = { lessonId: r.lessonId, at };
+      }
     } else {
       acc.inProgress.push({ lessonId: r.lessonId, at: active ?? r.updatedAt });
     }
@@ -152,23 +153,18 @@ export async function computeSectionLessonTracking(
 
   const students: StudentLessonTracking[] = users.map((u) => {
     const acc = byUser.get(u.id)!;
-    // "Current" lesson = most recently active in-progress lesson.
-    const current = acc.inProgress
-      .slice()
-      .sort((a, b) => b.at.getTime() - a.at.getTime())[0];
     return {
       userId: u.id,
       name: u.name,
       email: u.email,
       completedLessonIds: acc.completed,
       inProgressLessonIds: acc.inProgress.map((x) => x.lessonId),
-      currentLessonId: current?.lessonId ?? null,
+      lastCompletedLessonId: acc.lastCompleted?.lessonId ?? null,
       completedCount: acc.completed.length,
       attemptedProblemSlugs: acc.attempted,
       solvedProblemSlugs: acc.solved,
       solvedCount: acc.solved.length,
       attemptedCount: acc.attempted.length,
-      totalTimeSeconds: acc.timeSpent,
       lastActiveAt: acc.lastActive ? acc.lastActive.toISOString() : null,
       assessmentsAttempted: attemptsByUser.get(u.id) ?? 0,
     };
