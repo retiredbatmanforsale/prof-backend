@@ -161,6 +161,24 @@ export default async function studentAssessmentRoutes(app: FastifyInstance) {
     const a = await loadVisible(userId, request.params.id);
     if (!a) return reply.status(404).send({ error: "Assessment not found" });
 
+    // Faculty-set window. Start time gates entry; end time (dueAt) hard-closes
+    // unless late entry is allowed.
+    const now = new Date();
+    if (a.opensAt && now < a.opensAt) {
+      return reply.status(403).send({
+        error: "NOT_OPEN",
+        message: "This assessment hasn't opened yet.",
+        opensAt: a.opensAt.toISOString(),
+      });
+    }
+    if (a.dueAt && now > a.dueAt && !a.lateEntryAllowed) {
+      return reply.status(403).send({
+        error: "CLOSED",
+        message: "This assessment has closed.",
+        dueAt: a.dueAt.toISOString(),
+      });
+    }
+
     const existing = await app.prisma.assessmentAttempt.findUnique({
       where: { assessmentId_userId: { assessmentId: a.id, userId } },
     });
