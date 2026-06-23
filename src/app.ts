@@ -17,6 +17,7 @@ import tutorRoutes from "./routes/tutor/index.js";
 import progressRoutes from "./routes/progress/index.js";
 import practiceRoutes from "./routes/practice/index.js";
 import gradesRoutes from "./routes/grades/index.js";
+import studentAssessmentRoutes from "./routes/assessments/index.js";
 import rankingRoutes from "./routes/ranking/index.js";
 import lessonRoutes from "./routes/lessons/index.js";
 import streakRoutes from "./routes/streak/index.js";
@@ -130,6 +131,7 @@ export async function buildApp() {
   await app.register(progressRoutes, { prefix: "/progress" });
   await app.register(practiceRoutes, { prefix: "/practice" });
   await app.register(gradesRoutes, { prefix: "/grades" });
+  await app.register(studentAssessmentRoutes, { prefix: "/assessments" });
   await app.register(rankingRoutes, { prefix: "/ranking" });
   await app.register(lessonRoutes, { prefix: "/lessons" });
   await app.register(streakRoutes, { prefix: "/streak" });
