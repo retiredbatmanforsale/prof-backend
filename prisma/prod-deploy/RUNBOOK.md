@@ -21,6 +21,16 @@ It is **NOT directly deployable onto the existing prod DB**, because prod:
   `assessments.sectionId`, the `LessonProgress` Phase-3 columns, the
   `AssessmentAttempt` Phase-6 scoring columns, the `orgRole` fields, etc.;
 - still **has** `assessment_assignments`, which Phase 8 drops.
+- is missing the **one-student-one-cohort** unique on
+  `section_students(organizationMemberId)` (added by migration
+  `*_section_student_one_cohort`); the generated delta will include it.
+
+Helper scripts in this dir:
+- `generate_prod_delta.sh` — runs the diff below and sanity-checks the output.
+- `duplicate_cohort_detector.mjs` — pre-flight for the one-cohort unique.
+- `backfill_assessment_section.sql` — assessment→cohort link backfill (spliced).
+- `backfill_legacy_orgs.mjs` — Phase B: flatten staff→FACULTY, default cohorts,
+  attach un-cohorted students (idempotent, dry-run by default).
 
 If you naively `migrate deploy` → it runs `CREATE TABLE "users"` → fails.
 If you naively `migrate resolve --applied` the baseline → prod is marked done
@@ -44,22 +54,39 @@ export PROD_DIRECT_URL='postgresql://...'   # direct, NOT the pgbouncer/pooled U
 pg_dump "$PROD_DIRECT_URL" -Fc -f prod_backup_$(date +%Y%m%d).dump
 ```
 
+## Step 0 — one-cohort pre-flight (BLOCKING)
+
+The delta creates a UNIQUE index on `section_students(organizationMemberId)`. It
+will **fail** if any student is already in >1 cohort. Detect first — it only
+prints, never deletes:
+
+```bash
+DATABASE_URL="$PROD_DIRECT_URL" node prisma/prod-deploy/duplicate_cohort_detector.mjs
+```
+
+Exit 0 = clean, proceed. Exit 1 = duplicates printed — a human picks the cohort
+to keep and deletes the other `section_students` row(s) **manually**, then re-run
+until clean. Do NOT auto-delete.
+
 ## Step 1 — generate the exact delta prod is missing
 
 ```bash
 cd ~/Documents/prof/prof-backend
-npx prisma migrate diff \
-  --from-url "$PROD_DIRECT_URL" \
-  --to-schema-datamodel prisma/schema.prisma \
-  --script > prisma/prod-deploy/prod_delta.sql
+PROD_DIRECT_URL="$PROD_DIRECT_URL" prisma/prod-deploy/generate_prod_delta.sh
+# → writes prisma/prod-deploy/prod_delta.generated.sql and grep-checks the 8
+#   expected items. (Equivalent to: prisma migrate diff --from-url "$PROD_DIRECT_URL"
+#   --to-schema-datamodel prisma/schema.prisma --script.)
 ```
 
 This is read-only against prod (introspect only) and produces the precise SQL to
-bring prod up to `schema.prisma`, whatever prod's current state is.
+bring prod up to `schema.prisma`, whatever prod's current state is — no guessing.
 
 ## Step 2 — REVIEW the delta (the important part)
 
-Open `prod_delta.sql` and check every statement. Specifically:
+Open `prod_delta.generated.sql` and check every statement. Specifically:
+
+- **`CREATE UNIQUE INDEX "section_students_organizationMemberId_key"`** — confirm
+  it's there (the one-cohort guarantee). Step 0 must have passed first.
 
 - **`DROP TABLE "assessment_assignments"`** — confirm it's there. To avoid losing
   assessment→cohort links, splice in `backfill_assessment_section.sql` so it runs
@@ -81,13 +108,13 @@ spliced delta, then boot the backend and smoke-test `/grades`, `/practice`,
 its `sectionId` survived the backfill).
 
 ```bash
-psql "$CLONE_URL" -1 -v ON_ERROR_STOP=1 -f prisma/prod-deploy/prod_delta.sql
+psql "$CLONE_URL" -1 -v ON_ERROR_STOP=1 -f prisma/prod-deploy/prod_delta.generated.sql
 ```
 
 ## Step 4 — apply to prod (transactional)
 
 ```bash
-psql "$PROD_DIRECT_URL" -1 -v ON_ERROR_STOP=1 -f prisma/prod-deploy/prod_delta.sql
+psql "$PROD_DIRECT_URL" -1 -v ON_ERROR_STOP=1 -f prisma/prod-deploy/prod_delta.generated.sql
 ```
 
 `-1` wraps it in a single transaction; `ON_ERROR_STOP=1` aborts (and rolls back)
@@ -99,9 +126,15 @@ After Step 4, prod's schema == `schema.prisma` == the baseline's end-state, so w
 can mark the baseline as already-applied (this only writes the `_prisma_migrations`
 bookkeeping row; it runs no DDL):
 
+Mark **every** migration in `prisma/migrations/` as applied (the baseline AND the
+`*_section_student_one_cohort` migration — both end-states are now present in
+prod):
+
 ```bash
-DATABASE_URL="$PROD_DIRECT_URL" npx prisma migrate resolve \
-  --applied 0_baseline_university_runtime
+for m in prisma/migrations/*/; do
+  name=$(basename "$m")
+  DATABASE_URL="$PROD_DIRECT_URL" npx prisma migrate resolve --applied "$name"
+done
 ```
 
 ## Step 6 — verify
@@ -112,6 +145,21 @@ DATABASE_URL="$PROD_DIRECT_URL" npx prisma migrate status   # → "up to date"
 
 From here, all future prod releases are the normal one-liner: add migrations with
 `prisma migrate dev` locally, ship with `prisma migrate deploy` on prod.
+
+## Step 7 — Phase B legacy-org backfill (data, after the schema is migrated)
+
+Schema is now correct but old "flat" universities still have no cohorts and
+mixed staff roles. Flatten staff → FACULTY, create a "Default Cohort" per org,
+and attach un-cohorted students. Idempotent; dry-run first:
+
+```bash
+DATABASE_URL="$PROD_DIRECT_URL" node prisma/prod-deploy/backfill_legacy_orgs.mjs           # DRY-RUN
+DATABASE_URL="$PROD_DIRECT_URL" node prisma/prod-deploy/backfill_legacy_orgs.mjs --apply    # write
+```
+
+Re-running is safe (no-op once everything is cohorted and flattened). This step
+runs AFTER Step 4 so the one-cohort unique is already enforced — `createMany`
+skips any student who somehow already has a cohort.
 
 ## Rollback
 

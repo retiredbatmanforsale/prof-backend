@@ -269,7 +269,11 @@ model SectionStudent {
   member  OrganizationMember @relation(fields: [organizationMemberId], references: [id], onDelete: Cascade)
 
   @@unique([sectionId, organizationMemberId])
-  @@index([organizationMemberId])
+  // ONE-COHORT hard guarantee (Phase D): a member belongs to exactly one org, so
+  // a global unique on organizationMemberId enforces "one student = one cohort"
+  // at the DB level — the backstop the app-only check lacks against TOCTOU
+  // races. Supersedes the former plain @@index.
+  @@unique([organizationMemberId])
   @@map("section_students")
 }
 
