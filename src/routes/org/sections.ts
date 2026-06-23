@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { OrgRole } from "@prisma/client";
 import { parse } from "csv-parse/sync";
 import { computeSectionMetrics } from "../../lib/orgMetrics.js";
+import { computeSectionLessonTracking } from "../../lib/lessonTracking.js";
 import { isFacultyTierRole } from "../../lib/orgRole.js";
 import { recordAdminAction } from "../../lib/audit.js";
 import { generateToken } from "../../lib/tokens.js";
@@ -89,6 +90,111 @@ export default async function orgSectionsRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "Section not found" });
       }
       return reply.send(metrics);
+    }
+  );
+
+  // GET /org/sections/:id/assessments — assessments OWNED by this cohort, with
+  // attempt + pending-review counts (Phase 6 faculty review surface).
+  app.get<{ Params: { id: string } }>(
+    "/sections/:id/assessments",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const ctx = request.orgAdminContext!;
+      const section = await app.prisma.section.findFirst({
+        where: { id: request.params.id, organizationId: ctx.organizationId },
+        select: { id: true },
+      });
+      if (!section) return reply.status(404).send({ error: "Section not found" });
+
+      const rows = await app.prisma.assessment.findMany({
+        where: { sectionId: section.id },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          _count: { select: { questions: true } },
+          attempts: { select: { status: true, pendingReview: true } },
+        },
+      });
+
+      return reply.send({
+        assessments: rows.map((a) => ({
+          id: a.id,
+          title: a.title,
+          status: a.status,
+          questionCount: a._count.questions,
+          submittedCount: a.attempts.filter((x) => x.status === "SUBMITTED").length,
+          pendingCount: a.attempts.filter((x) => x.pendingReview).length,
+        })),
+      });
+    }
+  );
+
+  // GET /org/sections/:id/lessons — Phase 3 per-student lesson tracking for the
+  // cohort drill-in: completed lessons, current lesson, solved practice, time
+  // spent. Returns RAW facts; the UI applies curriculum weights for course %.
+  app.get<{ Params: { id: string } }>(
+    "/sections/:id/lessons",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const ctx = request.orgAdminContext!;
+      const section = await app.prisma.section.findFirst({
+        where: { id: request.params.id, organizationId: ctx.organizationId },
+        select: { id: true },
+      });
+      if (!section) {
+        return reply.status(404).send({ error: "Section not found" });
+      }
+
+      const tracking = await computeSectionLessonTracking(app.prisma, section.id);
+      if (!tracking) {
+        return reply.status(404).send({ error: "Section not found" });
+      }
+      return reply.send(tracking);
+    }
+  );
+
+  // GET /org/sections/:id/invites — the cohort's invites (Pending / Accepted /
+  // Expired). REUSES PreloadedStudent (the invite intent recorded at roster/CSV
+  // time) + its InvitationToken — no separate invite model. Status:
+  //   claimed=true                             → ACCEPTED
+  //   claimed=false + a live unused token      → PENDING
+  //   claimed=false + all tokens used/expired  → EXPIRED
+  app.get<{ Params: { id: string } }>(
+    "/sections/:id/invites",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const ctx = request.orgAdminContext!;
+      const section = await app.prisma.section.findFirst({
+        where: { id: request.params.id, organizationId: ctx.organizationId },
+        select: { id: true },
+      });
+      if (!section) return reply.status(404).send({ error: "Section not found" });
+
+      const preloaded = await app.prisma.preloadedStudent.findMany({
+        where: { sectionId: section.id },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          claimed: true,
+          createdAt: true,
+          invitationTokens: { select: { expiresAt: true, used: true } },
+        },
+      });
+
+      const now = new Date();
+      const invites = preloaded.map((p) => {
+        let status: "ACCEPTED" | "PENDING" | "EXPIRED";
+        if (p.claimed) status = "ACCEPTED";
+        else if (p.invitationTokens.some((t) => !t.used && t.expiresAt > now)) status = "PENDING";
+        else status = "EXPIRED";
+        return { id: p.id, email: p.email, name: p.name, status, invitedAt: p.createdAt.toISOString() };
+      });
+
+      return reply.send({ invites });
     }
   );
 
@@ -292,6 +398,130 @@ export default async function orgSectionsRoutes(app: FastifyInstance) {
         added: count,
         skippedInvalid: memberIds.length - valid.length,
       });
+    }
+  );
+
+  // POST /org/sections/:id/students/invite — manually add NEW students by email
+  // to THIS cohort (manual entry or a client-parsed CSV). Same two-way handshake
+  // as the roster CSV: each email is preloaded with this section recorded;
+  // already-joined students are linked immediately, the rest get an invitation
+  // email and become members only once they accept.
+  app.post<{
+    Params: { id: string };
+    Body: { students?: Array<{ email?: string; name?: string }> };
+  }>(
+    "/sections/:id/students/invite",
+    { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const ctx = request.orgAdminContext!;
+      const input = Array.isArray(request.body?.students) ? request.body!.students : [];
+      if (input.length === 0) {
+        return reply
+          .status(400)
+          .send({ error: "`students` (non-empty array of { email, name? }) is required" });
+      }
+      if (input.length > 500) {
+        return reply.status(400).send({ error: "Maximum 500 students per request" });
+      }
+
+      const section = await app.prisma.section.findFirst({
+        where: { id: request.params.id, organizationId: ctx.organizationId },
+        select: { id: true },
+      });
+      if (!section) {
+        return reply.status(404).send({ error: "Section not found" });
+      }
+
+      const results = {
+        sectionsTouched: 1,
+        studentsPreloaded: 0,
+        studentsLinked: 0,
+        invited: 0,
+        errors: [] as string[],
+      };
+
+      for (let i = 0; i < input.length; i++) {
+        const email = (input[i]?.email || "").toLowerCase().trim();
+        const name = (input[i]?.name || "").trim() || null;
+        if (!email || !emailRegex.test(email)) {
+          results.errors.push(`Row ${i + 1}: invalid email "${email}"`);
+          continue;
+        }
+        try {
+          const student = await app.prisma.preloadedStudent.upsert({
+            where: { organizationId_email: { organizationId: ctx.organizationId, email } },
+            create: {
+              email,
+              name,
+              organizationId: ctx.organizationId,
+              orgRole: OrgRole.STUDENT,
+              sectionId: section.id,
+            },
+            update: { sectionId: section.id, ...(name ? { name } : {}) },
+          });
+          results.studentsPreloaded++;
+
+          if (student.claimed && student.claimedByUserId) {
+            const member = await app.prisma.organizationMember.findUnique({
+              where: {
+                userId_organizationId: {
+                  userId: student.claimedByUserId,
+                  organizationId: ctx.organizationId,
+                },
+              },
+              select: { id: true },
+            });
+            if (member) {
+              await app.prisma.sectionStudent.upsert({
+                where: {
+                  sectionId_organizationMemberId: {
+                    sectionId: section.id,
+                    organizationMemberId: member.id,
+                  },
+                },
+                create: { sectionId: section.id, organizationMemberId: member.id },
+                update: {},
+              });
+              results.studentsLinked++;
+            }
+            continue;
+          }
+
+          await app.prisma.invitationToken.updateMany({
+            where: { preloadedStudentId: student.id, used: false },
+            data: { used: true },
+          });
+          const rawToken = generateToken();
+          await app.prisma.invitationToken.create({
+            data: {
+              token: rawToken,
+              preloadedStudentId: student.id,
+              expiresAt: new Date(Date.now() + INVITATION_EXPIRY_MS),
+            },
+          });
+          try {
+            await sendInvitationEmail(email, ctx.organizationName, rawToken);
+          } catch (err) {
+            app.log.error(err, `Failed to send invitation to ${email}`);
+          }
+          results.invited++;
+        } catch (err) {
+          app.log.error(err, `Failed to process ${email}`);
+          results.errors.push(`Row ${i + 1}: failed to process "${email}"`);
+        }
+      }
+
+      await recordAdminAction({
+        prisma: app.prisma,
+        actor: request.currentUser!,
+        action: "SECTION_STUDENTS_INVITE",
+        entityType: "SECTION",
+        entityId: section.id,
+        metadata: { organizationId: ctx.organizationId, ...results, errors: results.errors.length },
+        log: request.log,
+      });
+
+      return reply.send({ success: true, ...results });
     }
   );
 

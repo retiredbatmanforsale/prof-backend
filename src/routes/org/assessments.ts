@@ -9,6 +9,11 @@ import {
   metadataData,
   serializeQuestionForFaculty,
 } from "../../lib/assessments.js";
+import {
+  autoGrade,
+  applyReviewMarks,
+  writeAutoGradeEntries,
+} from "../../lib/grading.js";
 import { recordAdminAction } from "../../lib/audit.js";
 
 /**
@@ -62,7 +67,8 @@ export default async function orgAssessmentRoutes(app: FastifyInstance) {
 
   const detailInclude = {
     questions: { orderBy: { order: "asc" as const } },
-    assignments: { include: { section: { select: { id: true, name: true, course: true } } } },
+    // The single owning cohort (Phase 2 ownership; AssessmentAssignment dropped in Phase 8).
+    section: { select: { id: true, name: true, course: true } },
     createdBy: { select: { user: { select: { id: true, name: true, email: true } } } },
     _count: { select: { attempts: true } },
   };
@@ -88,7 +94,9 @@ export default async function orgAssessmentRoutes(app: FastifyInstance) {
       creator: a.createdBy?.user ?? null,
       attemptCount: a._count?.attempts ?? 0,
       questions: a.questions.map(serializeQuestionForFaculty),
-      cohorts: a.assignments.map((x: any) => ({ id: x.section.id, name: x.section.name, course: x.section.course })),
+      // The single owning cohort (Phase 2). The AssessmentAssignment bridge and
+      // the derived `cohorts[]` array were removed in Phase 8.
+      section: a.section ? { id: a.section.id, name: a.section.name, course: a.section.course } : null,
     };
   }
 
@@ -100,7 +108,7 @@ export default async function orgAssessmentRoutes(app: FastifyInstance) {
       orderBy: { updatedAt: "desc" },
       include: {
         createdBy: { select: { user: { select: { name: true, email: true } } } },
-        _count: { select: { questions: true, assignments: true, attempts: true } },
+        _count: { select: { questions: true, attempts: true } },
       },
     });
     return reply.send({
@@ -117,7 +125,7 @@ export default async function orgAssessmentRoutes(app: FastifyInstance) {
         updatedAt: a.updatedAt.toISOString(),
         creatorName: a.createdBy?.user?.name ?? a.createdBy?.user?.email ?? "—",
         questionCount: a._count.questions,
-        cohortCount: a._count.assignments,
+        cohortCount: a.sectionId ? 1 : 0,
         attemptCount: a._count.attempts,
       })),
     });
@@ -161,8 +169,9 @@ export default async function orgAssessmentRoutes(app: FastifyInstance) {
         opensAt: body.opensAt ? new Date(body.opensAt) : null,
         dueAt: body.dueAt ? new Date(body.dueAt) : null,
         ...metadataData(body),
+        // Phase 8: ownership is the single sectionId FK (AssessmentAssignment removed).
+        sectionId: sectionIds[0] ?? null,
         questions: { create: (body.questions ?? []).map((q, i) => questionCreateData(q, i)) },
-        assignments: { create: sectionIds.map((sectionId) => ({ sectionId, assignedByMemberId: memberId })) },
       },
       include: detailInclude,
     });
@@ -175,6 +184,57 @@ export default async function orgAssessmentRoutes(app: FastifyInstance) {
     });
     return reply.status(201).send({ assessment: serializeOrgDetail(created) });
   });
+
+  // NEW (Phase 2): POST /org/sections/:sectionId/assessments — create an
+  // assessment INSIDE a cohort. Ownership is implicit from the URL: no
+  // sectionIds[] in the body, no AssessmentAssignment bridge — the assessment is
+  // saved with assessment.sectionId.
+  app.post<{ Params: { sectionId: string } }>(
+    "/sections/:sectionId/assessments",
+    { config: { rateLimit } },
+    async (request, reply) => {
+      const ctx = request.orgAdminContext!;
+      const { sectionId } = request.params;
+      const parsed = createAssessmentSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: "Validation failed", details: parsed.error.flatten().fieldErrors });
+      }
+      const body = parsed.data;
+      const memberId = await adminMemberId(request.currentUser!.userId, ctx.organizationId);
+      if (!memberId) return reply.status(403).send({ error: "Not a member of this organization" });
+
+      // The cohort must belong to the caller's org.
+      const secErr = await assertSectionsInOrg(ctx.organizationId, [sectionId]);
+      if (secErr) return reply.status(secErr.status).send({ error: secErr.error });
+
+      const created = await app.prisma.assessment.create({
+        data: {
+          organizationId: ctx.organizationId,
+          createdByMemberId: memberId,
+          sectionId, // ← ownership is implicit from the URL
+          visibility: AssessmentVisibility.SECTION,
+          title: body.title,
+          description: body.description ?? null,
+          status: body.publish ? AssessmentStatus.PUBLISHED : AssessmentStatus.DRAFT,
+          durationMinutes: body.durationMinutes ?? null,
+          opensAt: body.opensAt ? new Date(body.opensAt) : null,
+          dueAt: body.dueAt ? new Date(body.dueAt) : null,
+          ...metadataData(body),
+          questions: { create: (body.questions ?? []).map((q, i) => questionCreateData(q, i)) },
+          // Ownership is the sectionId FK (AssessmentAssignment removed in Phase 8).
+        },
+        include: detailInclude,
+      });
+
+      await recordAdminAction({
+        prisma: app.prisma, actor: request.currentUser!,
+        action: body.publish ? "ASSESSMENT_PUBLISH" : "ASSESSMENT_CREATE",
+        entityType: "ASSESSMENT", entityId: created.id,
+        metadata: { organizationId: ctx.organizationId, scope: "SECTION", sectionId }, log: request.log,
+      });
+      return reply.status(201).send({ assessment: serializeOrgDetail(created) });
+    }
+  );
 
   // PATCH /org/assessments/:id — edit any org assessment.
   app.patch<{ Params: { id: string } }>("/assessments/:id", { config: { rateLimit } }, async (request, reply) => {
@@ -194,8 +254,6 @@ export default async function orgAssessmentRoutes(app: FastifyInstance) {
       const secErr = await assertSectionsInOrg(ctx.organizationId, body.sectionIds);
       if (secErr) return reply.status(secErr.status).send({ error: secErr.error });
     }
-    const memberId = await adminMemberId(request.currentUser!.userId, ctx.organizationId);
-
     const metaData: Record<string, unknown> = { ...metadataData(body) };
     if (body.title !== undefined) metaData.title = body.title;
     if (body.description !== undefined) metaData.description = body.description;
@@ -203,6 +261,8 @@ export default async function orgAssessmentRoutes(app: FastifyInstance) {
     if (body.opensAt !== undefined) metaData.opensAt = body.opensAt ? new Date(body.opensAt) : null;
     if (body.dueAt !== undefined) metaData.dueAt = body.dueAt ? new Date(body.dueAt) : null;
     if (body.status !== undefined) metaData.status = body.status === "PUBLISHED" ? AssessmentStatus.PUBLISHED : AssessmentStatus.DRAFT;
+    // Phase 8: re-target ownership via the sectionId FK (no AssessmentAssignment).
+    if (body.sectionIds !== undefined) metaData.sectionId = body.sectionIds[0] ?? null;
 
     const tx: Prisma.PrismaPromise<unknown>[] = [
       app.prisma.assessment.update({ where: { id: existing.id }, data: metaData }),
@@ -211,13 +271,6 @@ export default async function orgAssessmentRoutes(app: FastifyInstance) {
       tx.push(app.prisma.assessmentQuestion.deleteMany({ where: { assessmentId: existing.id } }));
       tx.push(app.prisma.assessmentQuestion.createMany({
         data: body.questions.map((q, i) => ({ ...questionCreateData(q, i), assessmentId: existing.id })),
-      }));
-    }
-    if (body.sectionIds) {
-      tx.push(app.prisma.assessmentAssignment.deleteMany({ where: { assessmentId: existing.id } }));
-      tx.push(app.prisma.assessmentAssignment.createMany({
-        data: body.sectionIds.map((sectionId) => ({ assessmentId: existing.id, sectionId, assignedByMemberId: memberId })),
-        skipDuplicates: true,
       }));
     }
     await app.prisma.$transaction(tx);
@@ -274,7 +327,7 @@ export default async function orgAssessmentRoutes(app: FastifyInstance) {
     const ctx = request.orgAdminContext!;
     const src = await app.prisma.assessment.findFirst({
       where: { id: request.params.id, ...orgScopeWhere(ctx.organizationId) },
-      include: { questions: { orderBy: { order: "asc" } }, assignments: true },
+      include: { questions: { orderBy: { order: "asc" } } },
     });
     if (!src) return reply.status(404).send({ error: "Assessment not found" });
     const memberId = await adminMemberId(request.currentUser!.userId, ctx.organizationId);
@@ -295,6 +348,8 @@ export default async function orgAssessmentRoutes(app: FastifyInstance) {
         navigationMode: src.navigationMode,
         autoSubmit: src.autoSubmit,
         durationMinutes: src.durationMinutes,
+        // Phase 8: copy the owning cohort via the sectionId FK.
+        sectionId: src.sectionId,
         questions: {
           create: src.questions.map((q) => ({
             order: q.order, kind: q.kind, points: q.points,
@@ -302,7 +357,6 @@ export default async function orgAssessmentRoutes(app: FastifyInstance) {
             content: (q.content ?? Prisma.JsonNull) as Prisma.InputJsonValue,
           })),
         },
-        assignments: { create: src.assignments.map((x) => ({ sectionId: x.sectionId, assignedByMemberId: memberId })) },
       },
       include: detailInclude,
     });
@@ -313,4 +367,157 @@ export default async function orgAssessmentRoutes(app: FastifyInstance) {
     });
     return reply.status(201).send({ assessment: serializeOrgDetail(copy) });
   });
+
+  // ─── Phase 6: faculty review + grading of attempts ───
+
+  // Load an assessment in the caller's org with its questions.
+  async function loadOrgAssessment(assessmentId: string, organizationId: string) {
+    return app.prisma.assessment.findFirst({
+      where: { id: assessmentId, ...orgScopeWhere(organizationId) },
+      include: { questions: { orderBy: { order: "asc" } } },
+    });
+  }
+
+  // GET /org/assessments/:id/attempts — one row per student who has an attempt.
+  app.get<{ Params: { id: string } }>(
+    "/assessments/:id/attempts",
+    { config: { rateLimit } },
+    async (request, reply) => {
+      const ctx = request.orgAdminContext!;
+      const assessment = await loadOrgAssessment(request.params.id, ctx.organizationId);
+      if (!assessment) return reply.status(404).send({ error: "Assessment not found" });
+
+      const attempts = await app.prisma.assessmentAttempt.findMany({
+        where: { assessmentId: assessment.id },
+        orderBy: { submittedAt: "desc" },
+        include: { user: { select: { id: true, name: true, email: true } } },
+      });
+
+      return reply.send({
+        assessmentId: assessment.id,
+        title: assessment.title,
+        attempts: attempts.map((at) => ({
+          attemptId: at.id,
+          student: at.user,
+          status: at.status,
+          score: at.score ?? null,
+          maxScore: at.maxScore ?? null,
+          pendingReview: at.pendingReview,
+          submittedAt: at.submittedAt?.toISOString() ?? null,
+          gradedAt: at.gradedAt?.toISOString() ?? null,
+        })),
+      });
+    }
+  );
+
+  // GET /org/assessments/:id/attempts/:attemptId — full attempt for review:
+  // every question (with answer keys), the student's answer, and current marks.
+  app.get<{ Params: { id: string; attemptId: string } }>(
+    "/assessments/:id/attempts/:attemptId",
+    { config: { rateLimit } },
+    async (request, reply) => {
+      const ctx = request.orgAdminContext!;
+      const assessment = await loadOrgAssessment(request.params.id, ctx.organizationId);
+      if (!assessment) return reply.status(404).send({ error: "Assessment not found" });
+
+      const attempt = await app.prisma.assessmentAttempt.findFirst({
+        where: { id: request.params.attemptId, assessmentId: assessment.id },
+        include: { user: { select: { id: true, name: true, email: true } } },
+      });
+      if (!attempt) return reply.status(404).send({ error: "Attempt not found" });
+
+      const state = (attempt.answers ?? {}) as { answers?: Record<string, unknown> };
+      const answers = state.answers ?? {};
+      const graded = autoGrade(assessment.questions, answers);
+      const reviewMarks = (attempt.reviewMarks ?? {}) as Record<string, number>;
+
+      return reply.send({
+        attemptId: attempt.id,
+        student: attempt.user,
+        status: attempt.status,
+        score: attempt.score ?? null,
+        maxScore: attempt.maxScore ?? graded.maxScore,
+        pendingReview: attempt.pendingReview,
+        submittedAt: attempt.submittedAt?.toISOString() ?? null,
+        questions: assessment.questions.map((q) => {
+          const pq = graded.perQuestion.find((p) => p.questionId === q.id)!;
+          return {
+            ...serializeQuestionForFaculty(q),
+            answer: answers[q.id] ?? null,
+            auto: pq.auto,
+            awarded: pq.auto ? pq.awarded : reviewMarks[q.id] ?? null,
+            maxPoints: pq.points,
+          };
+        }),
+      });
+    }
+  );
+
+  // POST /org/assessments/:id/attempts/:attemptId/grade — assign marks to the
+  // non-auto questions and (optionally) finalize. Finalizing recomputes the
+  // score and pushes it into AUTO gradebook components.
+  app.post<{ Params: { id: string; attemptId: string }; Body: { reviewMarks?: Record<string, number>; finalize?: boolean } }>(
+    "/assessments/:id/attempts/:attemptId/grade",
+    { config: { rateLimit } },
+    async (request, reply) => {
+      const ctx = request.orgAdminContext!;
+      const assessment = await loadOrgAssessment(request.params.id, ctx.organizationId);
+      if (!assessment) return reply.status(404).send({ error: "Assessment not found" });
+
+      const attempt = await app.prisma.assessmentAttempt.findFirst({
+        where: { id: request.params.attemptId, assessmentId: assessment.id },
+      });
+      if (!attempt) return reply.status(404).send({ error: "Attempt not found" });
+      if (attempt.status !== "SUBMITTED") {
+        return reply.status(409).send({ error: "Attempt is not submitted" });
+      }
+
+      const incoming = request.body?.reviewMarks ?? {};
+      const existingMarks = (attempt.reviewMarks ?? {}) as Record<string, number>;
+      const reviewMarks = { ...existingMarks, ...incoming };
+
+      const state = (attempt.answers ?? {}) as { answers?: Record<string, unknown> };
+      const answers = state.answers ?? {};
+      const { score, maxScore, pendingQuestionIds } = applyReviewMarks(
+        assessment.questions,
+        answers,
+        reviewMarks
+      );
+
+      const finalize = request.body?.finalize === true;
+      const allResolved = pendingQuestionIds.length === 0;
+      const nowFinal = finalize && allResolved;
+
+      const updated = await app.prisma.assessmentAttempt.update({
+        where: { id: attempt.id },
+        data: {
+          reviewMarks: reviewMarks as object,
+          score,
+          maxScore,
+          pendingReview: !nowFinal,
+          gradedAt: nowFinal ? new Date() : null,
+        },
+      });
+
+      let gradebookWritten = 0;
+      if (nowFinal) {
+        gradebookWritten = await writeAutoGradeEntries(
+          app.prisma,
+          assessment.id,
+          attempt.userId,
+          score,
+          maxScore
+        );
+      }
+
+      return reply.send({
+        attemptId: updated.id,
+        score,
+        maxScore,
+        finalized: nowFinal,
+        stillPending: pendingQuestionIds,
+        gradebookEntriesWritten: gradebookWritten,
+      });
+    }
+  );
 }
