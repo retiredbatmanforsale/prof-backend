@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../../hooks/auth.js";
-import { requireOrgAdmin } from "../../hooks/orgAdmin.js";
+import { requireFaculty } from "../../hooks/faculty.js";
 import orgMetricsRoutes from "../org/metrics.js";
 import orgSectionsRoutes from "../org/sections.js";
 import orgMembersRoutes from "../org/members.js";
@@ -13,12 +13,14 @@ import orgGradesRoutes from "../org/grades.js";
  *
  * The campus-admin and faculty dashboards are now ONE flat surface. These are
  * the former /org/* modules, reused verbatim (sections, members, assessments,
- * grades, analytics, metrics) and gated by requireOrgAdmin. The standalone /org
- * runtime surface is retired; only /admin (global) and /faculty remain.
+ * grades, analytics, metrics), gated by requireFaculty — open to ALL org staff
+ * under the flat hierarchy (CAMPUS_ADMIN/FACULTY/LAB_ASSISTANT/TA treated
+ * identically). The standalone /org runtime surface is retired; only /admin
+ * (global) and /faculty remain.
  */
 export default async function facultyRoutes(app: FastifyInstance) {
   app.addHook("preHandler", authenticate);
-  app.addHook("preHandler", requireOrgAdmin);
+  app.addHook("preHandler", requireFaculty);
 
   await app.register(orgMetricsRoutes);
   await app.register(orgSectionsRoutes);

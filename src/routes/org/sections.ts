@@ -3,7 +3,7 @@ import { OrgRole } from "@prisma/client";
 import { parse } from "csv-parse/sync";
 import { computeSectionMetrics } from "../../lib/orgMetrics.js";
 import { computeSectionLessonTracking } from "../../lib/lessonTracking.js";
-import { isFacultyTierRole } from "../../lib/orgRole.js";
+import { isStaffRole } from "../../lib/orgRole.js";
 import { recordAdminAction } from "../../lib/audit.js";
 import { generateToken } from "../../lib/tokens.js";
 import { sendInvitationEmail } from "../../lib/email.js";
@@ -278,9 +278,9 @@ export default async function orgSectionsRoutes(app: FastifyInstance) {
           .status(404)
           .send({ error: "Member not found in this organization" });
       }
-      if (!isFacultyTierRole(member.orgRole)) {
+      if (!isStaffRole(member.orgRole)) {
         return reply.status(400).send({
-          error: "Only teaching staff (faculty, lab assistant, or TA) can be assigned to a section",
+          error: "Only faculty (university staff) can be assigned to a section",
         });
       }
 
