@@ -4,6 +4,7 @@ import { generateToken, hashToken } from "./tokens.js";
 import {
   activeOrgWhere,
   campusAdminMembershipWhere,
+  staffMembershipWhere,
   FACULTY_TIER_ROLES,
 } from "./orgRole.js";
 import type { JWTPayload } from "../types/index.js";
@@ -159,6 +160,52 @@ export async function getOrgAdminInfo(
 }
 
 /**
+ * FLAT HIERARCHY: resolve a user's STAFF membership for the unified /faculty
+ * surface. Any non-student org role (CAMPUS_ADMIN/FACULTY/LAB_ASSISTANT/TA, or
+ * the legacy isOrgAdmin boolean) counts. Only an active membership of an active,
+ * in-window org qualifies. Returns the OrganizationMember id for section
+ * scoping. This is the single resolver behind the faculty guard.
+ */
+export async function getStaffOrgInfo(
+  prisma: PrismaClient,
+  userId: string
+): Promise<{
+  isStaff: boolean;
+  memberId: string | null;
+  organizationId: string | null;
+  organizationName: string | null;
+}> {
+  const now = new Date();
+  const membership = await prisma.organizationMember.findFirst({
+    where: {
+      userId,
+      isActive: true,
+      ...staffMembershipWhere,
+      organization: activeOrgWhere(now),
+    },
+    select: {
+      id: true,
+      organization: { select: { id: true, name: true } },
+    },
+  });
+
+  if (!membership) {
+    return {
+      isStaff: false,
+      memberId: null,
+      organizationId: null,
+      organizationName: null,
+    };
+  }
+  return {
+    isStaff: true,
+    memberId: membership.id,
+    organizationId: membership.organization.id,
+    organizationName: membership.organization.name,
+  };
+}
+
+/**
  * Resolve a user's faculty-tier membership (FACULTY/LAB_ASSISTANT/TA) for the
  * /faculty surface. Only counts an active membership of an active, in-window
  * org. Returns the OrganizationMember id so section queries can scope to the
@@ -224,31 +271,36 @@ export async function getOrgTokenScope(
   organizationName: string | null;
   isOrgAdmin: boolean;
 }> {
-  const admin = await getOrgAdminInfo(prisma, userId);
-  if (admin.isOrgAdmin) {
+  // FLAT HIERARCHY: any org staff member (campus admin OR faculty-tier)
+  // surfaces identically as FACULTY with full org access. The frontend routes
+  // FACULTY (or isOrgAdmin) to /faculty; the backend guard re-checks the DB.
+  // CAMPUS_ADMIN is no longer surfaced in tokens — there is no role split.
+  const staff = await getStaffOrgInfo(prisma, userId);
+  if (staff.isStaff) {
     return {
-      orgRole: OrgRole.CAMPUS_ADMIN,
-      organizationId: admin.organizationId,
-      organizationName: admin.organizationName,
+      orgRole: OrgRole.FACULTY,
+      organizationId: staff.organizationId,
+      organizationName: staff.organizationName,
       isOrgAdmin: true,
     };
   }
 
+  // Institutional STUDENT: not staff, but an active learner in an active org.
+  // Surface orgRole=STUDENT + the org context so the frontend can route them to
+  // their student dashboard (the dropdown/dashboard link gates on this). A user
+  // with no active org membership (e.g. an individual premium learner) stays
+  // null — they have no university dashboard.
   const now = new Date();
-  const staff = await prisma.organizationMember.findFirst({
+  const student = await prisma.organizationMember.findFirst({
     where: {
       userId,
       isActive: true,
-      orgRole: { in: [...FACULTY_TIER_ROLES] },
+      orgRole: OrgRole.STUDENT,
       organization: activeOrgWhere(now),
     },
-    select: {
-      orgRole: true,
-      organization: { select: { id: true, name: true } },
-    },
+    select: { organization: { select: { id: true, name: true } } },
   });
-
-  if (!staff) {
+  if (!student) {
     return {
       orgRole: null,
       organizationId: null,
@@ -257,9 +309,9 @@ export async function getOrgTokenScope(
     };
   }
   return {
-    orgRole: staff.orgRole,
-    organizationId: staff.organization.id,
-    organizationName: staff.organization.name,
+    orgRole: OrgRole.STUDENT,
+    organizationId: student.organization.id,
+    organizationName: student.organization.name,
     isOrgAdmin: false,
   };
 }

@@ -26,12 +26,39 @@ export function isFacultyTierRole(role: OrgRole | null | undefined): boolean {
 }
 
 /**
+ * FLAT HIERARCHY: every non-student org role is "staff" and gets the single
+ * faculty runtime surface. CAMPUS_ADMIN, FACULTY, LAB_ASSISTANT and TA are all
+ * treated identically for runtime ACCESS — there is no campus-admin/faculty
+ * split anymore. (Legacy enum values are kept for migration compatibility; new
+ * staff are all written as FACULTY.) STUDENT is the only non-staff tier.
+ */
+export const STAFF_ROLES: readonly OrgRole[] = [
+  OrgRole.CAMPUS_ADMIN,
+  OrgRole.FACULTY,
+  OrgRole.LAB_ASSISTANT,
+  OrgRole.TA,
+];
+
+export function isStaffRole(role: OrgRole | null | undefined): boolean {
+  return !!role && STAFF_ROLES.includes(role);
+}
+
+/**
  * Membership filter that counts as a campus admin, tolerant of rows where only
  * the legacy `isOrgAdmin` boolean OR only the new `orgRole` is set. Spread into
  * an OrganizationMember `where` alongside the other (AND-ed) conditions.
  */
 export const campusAdminMembershipWhere = {
   OR: [{ isOrgAdmin: true }, { orgRole: OrgRole.CAMPUS_ADMIN }],
+} satisfies Prisma.OrganizationMemberWhereInput;
+
+/**
+ * Membership filter for ANY org staff member (flat hierarchy). Matches the
+ * legacy isOrgAdmin boolean or any non-student orgRole. This is the single
+ * gate for the /faculty runtime surface.
+ */
+export const staffMembershipWhere = {
+  OR: [{ isOrgAdmin: true }, { orgRole: { in: [...STAFF_ROLES] } }],
 } satisfies Prisma.OrganizationMemberWhereInput;
 
 /**

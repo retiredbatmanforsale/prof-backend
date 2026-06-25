@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { FACULTY_TIER_ROLES } from "../../lib/orgRole.js";
+import { STAFF_ROLES } from "../../lib/orgRole.js";
 
 /**
  * GET /org/members — the caller's organization roster (active members), used by
@@ -25,7 +25,7 @@ export default async function orgMembersRoutes(app: FastifyInstance) {
         where: {
           organizationId: ctx.organizationId,
           isActive: true,
-          ...(staffOnly ? { orgRole: { in: [...FACULTY_TIER_ROLES] } } : {}),
+          ...(staffOnly ? { orgRole: { in: [...STAFF_ROLES] } } : {}),
         },
         orderBy: { user: { name: "asc" } },
         select: {

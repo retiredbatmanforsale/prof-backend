@@ -317,10 +317,11 @@ export default async function studentRoutes(app: FastifyInstance) {
             create: {
               email,
               organizationId: org.id,
-              isOrgAdmin: true,
-              orgRole: OrgRole.CAMPUS_ADMIN,
+              // FLAT HIERARCHY: all org staff are FACULTY (no campus-admin tier).
+              isOrgAdmin: false,
+              orgRole: OrgRole.FACULTY,
             },
-            update: { isOrgAdmin: true, orgRole: OrgRole.CAMPUS_ADMIN },
+            update: { isOrgAdmin: false, orgRole: OrgRole.FACULTY },
           });
 
           // Already joined? Promote the live membership now so the dashboard
@@ -332,7 +333,7 @@ export default async function studentRoutes(app: FastifyInstance) {
                 userId: student.claimedByUserId,
                 organizationId: org.id,
               },
-              data: { isOrgAdmin: true, orgRole: OrgRole.CAMPUS_ADMIN },
+              data: { isOrgAdmin: false, orgRole: OrgRole.FACULTY },
             });
             results.promoted++;
             continue;

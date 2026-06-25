@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { AssessmentStatus, AttemptStatus, OrgRole } from "@prisma/client";
-import { FACULTY_TIER_ROLES } from "../../lib/orgRole.js";
+import { STAFF_ROLES } from "../../lib/orgRole.js";
 
 /**
  * Campus-admin analytics views (Faculty / Students / Live Monitoring) under
@@ -34,7 +34,7 @@ export default async function orgAnalyticsRoutes(app: FastifyInstance) {
 
     const [members, sectionStudents, attempts] = await Promise.all([
       app.prisma.organizationMember.findMany({
-        where: { organizationId: orgId, orgRole: { in: [...FACULTY_TIER_ROLES] } },
+        where: { organizationId: orgId, orgRole: { in: [...STAFF_ROLES] } },
         select: {
           id: true,
           orgRole: true,

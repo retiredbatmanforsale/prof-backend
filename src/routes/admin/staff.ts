@@ -8,12 +8,11 @@ import { recordAdminAction } from "../../lib/audit.js";
 const INVITATION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// Map free-text role labels to a faculty-tier OrgRole. Defaults to FACULTY.
-function normalizeFacultyRole(raw: string | undefined): OrgRole {
-  const r = (raw ?? "").toLowerCase().trim();
-  if (r === "ta" || r === "teaching assistant") return OrgRole.TA;
-  if (r === "lab" || r === "lab assistant" || r === "lab_assistant")
-    return OrgRole.LAB_ASSISTANT;
+// FLAT HIERARCHY: all university staff collapse to FACULTY. The optional CSV
+// `role` column (faculty/ta/lab) is ignored for tier assignment — every staff
+// member is created as FACULTY (legacy TA/LAB_ASSISTANT values are no longer
+// written). The argument is kept so the caller/signature is unchanged.
+function normalizeFacultyRole(_raw: string | undefined): OrgRole {
   return OrgRole.FACULTY;
 }
 
