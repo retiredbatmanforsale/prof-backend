@@ -276,7 +276,31 @@ export async function getOrgTokenScope(
   // FACULTY (or isOrgAdmin) to /faculty; the backend guard re-checks the DB.
   // CAMPUS_ADMIN is no longer surfaced in tokens — there is no role split.
   const staff = await getStaffOrgInfo(prisma, userId);
-  if (!staff.isStaff) {
+  if (staff.isStaff) {
+    return {
+      orgRole: OrgRole.FACULTY,
+      organizationId: staff.organizationId,
+      organizationName: staff.organizationName,
+      isOrgAdmin: true,
+    };
+  }
+
+  // Institutional STUDENT: not staff, but an active learner in an active org.
+  // Surface orgRole=STUDENT + the org context so the frontend can route them to
+  // their student dashboard (the dropdown/dashboard link gates on this). A user
+  // with no active org membership (e.g. an individual premium learner) stays
+  // null — they have no university dashboard.
+  const now = new Date();
+  const student = await prisma.organizationMember.findFirst({
+    where: {
+      userId,
+      isActive: true,
+      orgRole: OrgRole.STUDENT,
+      organization: activeOrgWhere(now),
+    },
+    select: { organization: { select: { id: true, name: true } } },
+  });
+  if (!student) {
     return {
       orgRole: null,
       organizationId: null,
@@ -285,10 +309,10 @@ export async function getOrgTokenScope(
     };
   }
   return {
-    orgRole: OrgRole.FACULTY,
-    organizationId: staff.organizationId,
-    organizationName: staff.organizationName,
-    isOrgAdmin: true,
+    orgRole: OrgRole.STUDENT,
+    organizationId: student.organization.id,
+    organizationName: student.organization.name,
+    isOrgAdmin: false,
   };
 }
 
