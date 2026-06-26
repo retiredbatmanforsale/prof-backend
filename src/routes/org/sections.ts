@@ -401,6 +401,153 @@ export default async function orgSectionsRoutes(app: FastifyInstance) {
     }
   );
 
+  // Resolve a student's OrganizationMember id from their userId, scoped to the
+  // caller's org. The faculty UI identifies students by userId everywhere, so
+  // the roster mutations below take :userId and map to the SectionStudent FK
+  // (organizationMemberId) here. Returns null if the user isn't a member.
+  const resolveMemberId = async (userId: string, organizationId: string) => {
+    const member = await app.prisma.organizationMember.findFirst({
+      where: { userId, organizationId },
+      select: { id: true },
+    });
+    return member?.id ?? null;
+  };
+
+  // DELETE /org/sections/:id/students/:userId — remove a student from this
+  // cohort. Deletes ONLY the SectionStudent link; the member, their account, and
+  // their (user-scoped) lesson/practice progress are untouched. Section-scoped
+  // grade entries are intentionally KEPT — a removed student's marks are not
+  // destroyed, they just drop out of the active roster view.
+  app.delete<{ Params: { id: string; userId: string } }>(
+    "/sections/:id/students/:userId",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const ctx = request.orgAdminContext!;
+      const { id: sectionId, userId } = request.params;
+
+      const section = await app.prisma.section.findFirst({
+        where: { id: sectionId, organizationId: ctx.organizationId },
+        select: { id: true },
+      });
+      if (!section) {
+        return reply.status(404).send({ error: "Section not found" });
+      }
+
+      const memberId = await resolveMemberId(userId, ctx.organizationId);
+      if (!memberId) {
+        return reply
+          .status(404)
+          .send({ error: "Student not found in this organization" });
+      }
+
+      const link = await app.prisma.sectionStudent.findFirst({
+        where: { sectionId: section.id, organizationMemberId: memberId },
+        select: { id: true },
+      });
+      if (!link) {
+        return reply.status(404).send({ error: "Student is not in this cohort" });
+      }
+
+      await app.prisma.sectionStudent.delete({ where: { id: link.id } });
+
+      await recordAdminAction({
+        prisma: app.prisma,
+        actor: request.currentUser!,
+        action: "SECTION_STUDENT_REMOVE",
+        entityType: "SECTION",
+        entityId: section.id,
+        metadata: { organizationId: ctx.organizationId, userId, memberId },
+        log: request.log,
+      });
+
+      return reply.send({ success: true });
+    }
+  );
+
+  // POST /org/sections/:id/students/:userId/move — move a student from this
+  // cohort to another in the SAME org. Atomic: the old SectionStudent link is
+  // deleted and the new one created in a single transaction, so the one-cohort
+  // invariant is never violated and the student is never briefly in zero or two
+  // cohorts. Old-cohort grade entries are KEPT (see DELETE above); the new
+  // cohort starts fresh.
+  app.post<{
+    Params: { id: string; userId: string };
+    Body: { toSectionId?: string };
+  }>(
+    "/sections/:id/students/:userId/move",
+    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const ctx = request.orgAdminContext!;
+      const { id: fromSectionId, userId } = request.params;
+      const toSectionId = (request.body?.toSectionId ?? "").trim();
+
+      if (!toSectionId) {
+        return reply.status(400).send({ error: "`toSectionId` is required" });
+      }
+      if (toSectionId === fromSectionId) {
+        return reply.status(400).send({ error: "Student is already in this cohort" });
+      }
+
+      // Both the source and destination sections must belong to the caller's org.
+      const sections = await app.prisma.section.findMany({
+        where: {
+          id: { in: [fromSectionId, toSectionId] },
+          organizationId: ctx.organizationId,
+        },
+        select: { id: true },
+      });
+      const found = new Set(sections.map((s) => s.id));
+      if (!found.has(fromSectionId) || !found.has(toSectionId)) {
+        return reply.status(404).send({ error: "Section not found" });
+      }
+
+      // The student must belong to this org and currently be in the source cohort.
+      const memberId = await resolveMemberId(userId, ctx.organizationId);
+      if (!memberId) {
+        return reply
+          .status(404)
+          .send({ error: "Student not found in this organization" });
+      }
+      const link = await app.prisma.sectionStudent.findFirst({
+        where: { sectionId: fromSectionId, organizationMemberId: memberId },
+        select: { id: true },
+      });
+      if (!link) {
+        return reply
+          .status(404)
+          .send({ error: "Student is not in the source cohort" });
+      }
+
+      // Delete-then-create in one transaction: the old link is gone before the
+      // new one is written, so the unique([organizationMemberId]) one-cohort
+      // constraint never trips.
+      await app.prisma.$transaction([
+        app.prisma.sectionStudent.delete({ where: { id: link.id } }),
+        app.prisma.sectionStudent.create({
+          data: { sectionId: toSectionId, organizationMemberId: memberId },
+        }),
+      ]);
+
+      await recordAdminAction({
+        prisma: app.prisma,
+        actor: request.currentUser!,
+        action: "SECTION_STUDENT_MOVE",
+        entityType: "SECTION",
+        entityId: toSectionId,
+        metadata: {
+          organizationId: ctx.organizationId,
+          userId,
+          memberId,
+          fromSectionId,
+          toSectionId,
+        },
+        log: request.log,
+      });
+
+      return reply.send({ success: true });
+    }
+  );
+
   // POST /org/sections/:id/students/invite — manually add NEW students by email
   // to THIS cohort (manual entry or a client-parsed CSV). Same two-way handshake
   // as the roster CSV: each email is preloaded with this section recorded;
