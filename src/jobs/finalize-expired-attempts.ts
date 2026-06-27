@@ -3,10 +3,12 @@
 // Lazy enforcement (in the attempt routes) closes a timed-out attempt the moment
 // an active student touches it. This sweep is the other half: it guarantees that
 // EVERY expired attempt is eventually finalized, even if the student never comes
-// back. Run on a schedule (e.g. every few minutes) via Cloud Run / cron:
-//   npm run job:finalize-expired
+// back. Lives under src/ so `tsc` compiles it to dist/jobs/ and it ships in the
+// prod image. Run as a Cloud Run Job on a schedule (env injected by Cloud Run):
+//   node dist/jobs/finalize-expired-attempts.js          (prod)
+//   npm run job:finalize-expired                         (local, via tsx + .env)
 import { PrismaClient } from "@prisma/client";
-import { isAttemptExpired, autoFinalizeAttempt } from "../src/lib/attemptLifecycle.js";
+import { isAttemptExpired, autoFinalizeAttempt } from "../lib/attemptLifecycle.js";
 
 const prisma = new PrismaClient();
 
