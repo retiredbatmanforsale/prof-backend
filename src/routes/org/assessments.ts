@@ -157,6 +157,12 @@ export default async function orgAssessmentRoutes(app: FastifyInstance) {
     const secErr = await assertSectionsInOrg(ctx.organizationId, sectionIds);
     if (secErr) return reply.status(secErr.status).send({ error: secErr.error });
 
+    if (body.publish && (body.questions ?? []).length === 0) {
+      return reply.status(400).send({
+        error: "Cannot publish an assessment with no questions. Add at least one question, or save it as a draft.",
+      });
+    }
+
     const created = await app.prisma.assessment.create({
       data: {
         organizationId: ctx.organizationId,
@@ -207,6 +213,12 @@ export default async function orgAssessmentRoutes(app: FastifyInstance) {
       const secErr = await assertSectionsInOrg(ctx.organizationId, [sectionId]);
       if (secErr) return reply.status(secErr.status).send({ error: secErr.error });
 
+      if (body.publish && (body.questions ?? []).length === 0) {
+        return reply.status(400).send({
+          error: "Cannot publish an assessment with no questions. Add at least one question, or save it as a draft.",
+        });
+      }
+
       const created = await app.prisma.assessment.create({
         data: {
           organizationId: ctx.organizationId,
@@ -250,6 +262,28 @@ export default async function orgAssessmentRoutes(app: FastifyInstance) {
     });
     if (!existing) return reply.status(404).send({ error: "Assessment not found" });
 
+    // Guard: once students have attempted, the question set is frozen (metadata
+    // edits stay allowed). Prevents corrupting in-flight attempts and scoring.
+    if (body.questions) {
+      const attempts = await app.prisma.assessmentAttempt.count({ where: { assessmentId: existing.id } });
+      if (attempts > 0) {
+        return reply.status(409).send({
+          error:
+            "This assessment already has student attempts, so its questions can no longer be changed. You can still edit the title, description, and dates.",
+        });
+      }
+    }
+
+    // Guard: never let an assessment go live with zero questions.
+    if (body.status === "PUBLISHED") {
+      const willHaveQuestions = body.questions
+        ? body.questions.length
+        : await app.prisma.assessmentQuestion.count({ where: { assessmentId: existing.id } });
+      if (willHaveQuestions === 0) {
+        return reply.status(400).send({ error: "Cannot publish an assessment with no questions." });
+      }
+    }
+
     if (body.sectionIds) {
       const secErr = await assertSectionsInOrg(ctx.organizationId, body.sectionIds);
       if (secErr) return reply.status(secErr.status).send({ error: secErr.error });
@@ -292,6 +326,12 @@ export default async function orgAssessmentRoutes(app: FastifyInstance) {
       where: { id: request.params.id, ...orgScopeWhere(ctx.organizationId) }, select: { id: true },
     });
     if (!existing) return reply.status(404).send({ error: "Assessment not found" });
+
+    const qCount = await app.prisma.assessmentQuestion.count({ where: { assessmentId: existing.id } });
+    if (qCount === 0) {
+      return reply.status(400).send({ error: "Cannot publish an assessment with no questions." });
+    }
+
     const updated = await app.prisma.assessment.update({
       where: { id: existing.id }, data: { status: AssessmentStatus.PUBLISHED }, include: detailInclude,
     });
