@@ -5,6 +5,7 @@ import { authenticate } from "../../hooks/auth.js";
 import { attemptStateSchema } from "../../schemas/assessment.js";
 import { serializeQuestionForStudent } from "../../lib/assessments.js";
 import { autoGrade, writeAutoGradeEntries } from "../../lib/grading.js";
+import { isAttemptExpired, autoFinalizeAttempt } from "../../lib/attemptLifecycle.js";
 
 /**
  * Student-facing assessment engine (/assessments). A student sees PUBLISHED
@@ -146,9 +147,13 @@ export default async function studentAssessmentRoutes(app: FastifyInstance) {
     const userId = request.currentUser!.userId;
     const a = await loadVisible(userId, request.params.id);
     if (!a) return reply.status(404).send({ error: "Assessment not found" });
-    const attempt = await app.prisma.assessmentAttempt.findUnique({
+    let attempt = await app.prisma.assessmentAttempt.findUnique({
       where: { assessmentId_userId: { assessmentId: a.id, userId } },
     });
+    // Lazy enforcement: a timed-out attempt is auto-submitted on read.
+    if (attempt && isAttemptExpired(a, attempt)) {
+      attempt = await autoFinalizeAttempt(app.prisma, a, attempt);
+    }
     return reply.send({
       attempt: attempt ? toAttempt(attempt) : null,
       attemptPolicy: a.attemptPolicy,
@@ -184,6 +189,12 @@ export default async function studentAssessmentRoutes(app: FastifyInstance) {
     });
 
     if (existing) {
+      // Lazy enforcement: an expired open attempt is auto-submitted, not resumed.
+      // (Under UNLIMITED the student can call start again to retake a fresh one.)
+      if (isAttemptExpired(a, existing)) {
+        const finalized = await autoFinalizeAttempt(app.prisma, a, existing);
+        return reply.send({ attempt: toAttempt(finalized), attemptPolicy: a.attemptPolicy, resumed: false, autoSubmitted: true });
+      }
       const finished = existing.status === "SUBMITTED" || existing.status === "LOCKED";
       if (finished && a.attemptPolicy === "UNLIMITED") {
         // Retake — reset to a fresh attempt.
@@ -250,6 +261,12 @@ export default async function studentAssessmentRoutes(app: FastifyInstance) {
     if (attempt.status === "SUBMITTED" || attempt.status === "LOCKED") {
       return reply.status(409).send({ error: "Attempt already submitted" });
     }
+    // Lazy enforcement: reject saves past the deadline and auto-submit.
+    const sa = await loadVisible(userId, request.params.id);
+    if (sa && isAttemptExpired(sa, attempt)) {
+      await autoFinalizeAttempt(app.prisma, sa, attempt);
+      return reply.status(409).send({ error: "TIME_UP", message: "Time is up — your attempt was submitted automatically." });
+    }
     await app.prisma.assessmentAttempt.update({
       where: { id: attempt.id },
       data: { answers: mergeState(attempt, parsed.data) as object },
@@ -266,6 +283,12 @@ export default async function studentAssessmentRoutes(app: FastifyInstance) {
     if (attempt.status === "SUBMITTED" || attempt.status === "LOCKED") {
       const a = await loadVisible(userId, request.params.id);
       return reply.send({ attempt: toAttempt(attempt), attemptPolicy: a?.attemptPolicy ?? "UNLIMITED" });
+    }
+    // Lazy enforcement: if time is already up, finalize rather than just exit.
+    const ea = await loadVisible(userId, request.params.id);
+    if (ea && isAttemptExpired(ea, attempt)) {
+      const finalized = await autoFinalizeAttempt(app.prisma, ea, attempt);
+      return reply.send({ attempt: toAttempt(finalized), attemptPolicy: ea.attemptPolicy });
     }
     const updated = await app.prisma.assessmentAttempt.update({
       where: { id: attempt.id },
@@ -323,7 +346,11 @@ export default async function studentAssessmentRoutes(app: FastifyInstance) {
     const userId = request.currentUser!.userId;
     const a = await loadVisible(userId, request.params.id);
     if (!a) return reply.status(404).send({ error: "Assessment not found" });
-    const attempt = await getOwnAttempt(userId, a.id);
+    let attempt = await getOwnAttempt(userId, a.id);
+    // Lazy enforcement: an abandoned timed-out attempt is finalized before view.
+    if (attempt && isAttemptExpired(a, attempt)) {
+      attempt = await autoFinalizeAttempt(app.prisma, a, attempt);
+    }
     if (!attempt || attempt.status !== "SUBMITTED") {
       return reply.status(404).send({ error: "No submitted attempt" });
     }
