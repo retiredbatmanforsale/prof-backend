@@ -15,6 +15,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:seed-university": "tsx --env-file=.env prisma/seed-university.ts",
     "db:seed-plans": "tsx --env-file=.env prisma/seed-plans.ts",
+    "db:seed-problem-tests": "tsx --env-file=.env prisma/seed-problem-tests.ts",
     "job:expiry-notices": "tsx --env-file=.env scripts/send-expiry-notices.ts",
     "job:finalize-expired": "tsx --env-file=.env src/jobs/finalize-expired-attempts.ts"
   },
