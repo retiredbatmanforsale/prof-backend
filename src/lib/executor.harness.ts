@@ -81,6 +81,63 @@ export function buildHarnessProgram(
 }
 
 /**
+ * Split a composed harness (problem preamble + `@__test__` blocks, as stored in a
+ * ProblemTest row) back into its preamble and individual blocks. Mirrors the split
+ * done at seed time. A row with no `@__test__` marker yields zero blocks.
+ */
+function splitHarnessBlocks(harness: string): { preamble: string; blocks: string[] } {
+  const first = harness.indexOf("@__test__(");
+  if (first === -1) return { preamble: harness, blocks: [] };
+  const preamble = harness.slice(0, first);
+  const blocks = harness.slice(first).split(/\n(?=@__test__\()/);
+  return { preamble, blocks };
+}
+
+/**
+ * Build ONE program for several HARNESS rows of the SAME problem (e.g. the SAMPLE
+ * row + the HIDDEN row). All rows of a problem share the same preamble
+ * (imports/helpers), so it is emitted once: numpy is imported a single time and
+ * every test runs in one process, ≈halving wall time versus one `execute` per row.
+ *
+ * Returns the program plus the `@__test__` block count for each input harness, in
+ * order, so the caller can attribute the flat results list back to each row's
+ * visibility/checkerType BY POSITION — robust even when sample/hidden share a name.
+ */
+export function buildCombinedHarnessProgram(
+  language: string,
+  userCode: string,
+  harnesses: string[]
+): { program: string; counts: number[] } {
+  if (!isPython(language)) {
+    throw new Error(
+      `HARNESS execution for language "${language}" is not yet supported (python only in Phase 2)`
+    );
+  }
+  let preamble = "";
+  const allBlocks: string[] = [];
+  const counts: number[] = [];
+  for (const h of harnesses) {
+    const { preamble: p, blocks } = splitHarnessBlocks(h ?? "");
+    // Rows of one problem share an identical preamble; keep the first non-empty one.
+    if (!preamble.trim() && p.trim()) preamble = p;
+    for (const b of blocks) allBlocks.push(b.trimEnd());
+    counts.push(blocks.length);
+  }
+  const harnessText =
+    (preamble.trim() ? preamble.trimEnd() + "\n\n" : "") + allBlocks.join("\n\n");
+  return {
+    program:
+      pythonPreamble() +
+      "\n# ── user code ──\n" +
+      userCode +
+      "\n# ── harness ──\n" +
+      harnessText +
+      pythonEmit(),
+    counts,
+  };
+}
+
+/**
  * Build a runnable program for a batch of discrete CASE tests (FUNCTION_CALL):
  * each case is turned into a `@__test__` whose name is the case id (so results
  * map straight back to the ProblemTest row). `input` must be
