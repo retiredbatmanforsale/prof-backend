@@ -111,25 +111,25 @@ enum SubscriptionStatus {
 // ─── Core Tables ──────────────────────────────────────────────
 
 model User {
-  id                  String    @id @default(cuid())
-  name                String
-  email               String    @unique
-  emailVerified       DateTime?
-  phone               String?
-  razorpayCustomerId  String?   @unique
-  image               String?
-  hashedPassword      String?
-  role           Role      @default(USER)
-  isActive       Boolean   @default(true)
-  isPremium      Boolean   @default(false)
+  id                 String    @id @default(cuid())
+  name               String
+  email              String    @unique
+  emailVerified      DateTime?
+  phone              String?
+  razorpayCustomerId String?   @unique
+  image              String?
+  hashedPassword     String?
+  role               Role      @default(USER)
+  isActive           Boolean   @default(true)
+  isPremium          Boolean   @default(false)
   // Admin-granted comp expiry. Null means "no comp" or "lifetime comp"
   // (the two cases are distinguished by isPremium + the absence of a
   // Subscription / legacy Payment row). When set and in the past,
   // getAccessInfo auto-revokes isPremium on the next refresh.
-  premiumEndsAt  DateTime?
+  premiumEndsAt      DateTime?
   premiumGrantReason String?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   oauthAccounts           OAuthAccount[]
   refreshTokens           RefreshToken[]
@@ -137,7 +137,7 @@ model User {
   payments                Payment[]
   subscriptions           Subscription[]
   passwordResetTokens     PasswordResetToken[]
-  claimedPreloadedRecords PreloadedStudent[] @relation("ClaimedBy")
+  claimedPreloadedRecords PreloadedStudent[]   @relation("ClaimedBy")
   quizAttempts            QuizAttempt[]
   lessonProgress          LessonProgress[]
   practiceAttempts        PracticeAttempt[]
@@ -145,6 +145,8 @@ model User {
   lessonLikes             LessonLike[]
   streak                  UserStreak?
   assessmentAttempts      AssessmentAttempt[]
+  practiceDrafts          PracticeDraft[]
+  codeSubmissions         CodeSubmission[]
 
   @@map("users")
 }
@@ -215,16 +217,16 @@ model OrganizationMember {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  expiryNotices    ExpiryNoticeLog[]
+  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization        Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  expiryNotices       ExpiryNoticeLog[]
   // Cohort membership (as a learner) and teaching assignments (as staff).
-  sectionStudentOf   SectionStudent[]
-  sectionAssignments SectionAssignment[]
+  sectionStudentOf    SectionStudent[]
+  sectionAssignments  SectionAssignment[]
   // Assessments this member authored (as faculty).
-  assessmentsAuthored Assessment[] @relation("AssessmentAuthor")
+  assessmentsAuthored Assessment[]        @relation("AssessmentAuthor")
   // Grade entries this member recorded (Phase 5 gradebook).
-  enteredGradeEntries GradeEntry[] @relation("GradeEntryEnteredBy")
+  enteredGradeEntries GradeEntry[]        @relation("GradeEntryEnteredBy")
 
   @@unique([userId, organizationId])
   @@map("organization_members")
@@ -302,7 +304,7 @@ model SectionAssignment {
 // are stored but never run or graded. See ASSESSMENT_ENGINE.md.
 
 model Assessment {
-  id                String           @id @default(cuid())
+  id                String               @id @default(cuid())
   organizationId    String
   // The faculty OrganizationMember who authored this. Tying to the member
   // (not the User) keeps authorship inside the org boundary, mirroring how
@@ -313,31 +315,31 @@ model Assessment {
   sectionId         String?
   title             String
   description       String?
-  status            AssessmentStatus @default(DRAFT)
+  status            AssessmentStatus     @default(DRAFT)
   // PROF_GLOBAL / ORGANIZATION / SECTION — drives which student persona can see
   // it and which role authored it. Defaults to SECTION (faculty-authored).
   visibility        AssessmentVisibility @default(SECTION)
   // Authoring metadata + in-test rules (all additive, sensible defaults so
   // existing rows are unaffected).
-  track             AssessmentTrack  @default(MIXED)
-  attemptPolicy     AttemptPolicy    @default(UNLIMITED)
-  lateEntryAllowed  Boolean          @default(true)
-  shuffleQuestions  Boolean          @default(false)
-  navigationMode    NavigationMode   @default(FREE)
-  autoSubmit        Boolean          @default(true)
+  track             AssessmentTrack      @default(MIXED)
+  attemptPolicy     AttemptPolicy        @default(UNLIMITED)
+  lateEntryAllowed  Boolean              @default(true)
+  shuffleQuestions  Boolean              @default(false)
+  navigationMode    NavigationMode       @default(FREE)
+  autoSubmit        Boolean              @default(true)
   // Optional scheduling metadata surfaced to students; not enforced server-
   // side in this slice (no timed-attempt engine yet).
   durationMinutes   Int?
   opensAt           DateTime?
   dueAt             DateTime?
-  createdAt         DateTime         @default(now())
-  updatedAt         DateTime         @updatedAt
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
 
-  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  createdBy    OrganizationMember     @relation("AssessmentAuthor", fields: [createdByMemberId], references: [id])
-  section      Section?               @relation(fields: [sectionId], references: [id], onDelete: SetNull)
-  questions    AssessmentQuestion[]
-  attempts     AssessmentAttempt[]
+  organization    Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy       OrganizationMember   @relation("AssessmentAuthor", fields: [createdByMemberId], references: [id])
+  section         Section?             @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  questions       AssessmentQuestion[]
+  attempts        AssessmentAttempt[]
   gradeComponents GradeComponent[] // Phase 5: AUTO grade components sourced from this assessment
 
   @@index([organizationId])
@@ -372,17 +374,17 @@ enum GradeSource {
 }
 
 model GradeComponent {
-  id        String             @id @default(cuid())
-  sectionId String
-  name      String
-  type      GradeComponentType
-  maxMarks  Float              @default(100)
-  weight    Float              @default(0)
+  id           String             @id @default(cuid())
+  sectionId    String
+  name         String
+  type         GradeComponentType
+  maxMarks     Float              @default(100)
+  weight       Float              @default(0)
   // Optional: AUTO components source their scores from this assessment's
   // attempts. Null = a purely manual component (viva, project, lab exam…).
   assessmentId String?
-  createdAt DateTime           @default(now())
-  updatedAt DateTime           @updatedAt
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
 
   section    Section      @relation(fields: [sectionId], references: [id], onDelete: Cascade)
   assessment Assessment?  @relation(fields: [assessmentId], references: [id], onDelete: SetNull)
@@ -430,12 +432,12 @@ model AssessmentAttempt {
   // provisional while pendingReview is true (auto portion only) and final once
   // gradedAt is set. maxScore is the sum of all question points. reviewMarks
   // holds faculty-assigned marks for non-auto questions ({ questionId: marks }).
-  score         Float?
-  maxScore      Float?
-  submittedAt   DateTime?
-  gradedAt      DateTime?
-  pendingReview Boolean   @default(false)
-  reviewMarks   Json?
+  score             Float?
+  maxScore          Float?
+  submittedAt       DateTime?
+  gradedAt          DateTime?
+  pendingReview     Boolean       @default(false)
+  reviewMarks       Json?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -567,41 +569,41 @@ model Payment {
 // ─── Subscription Tables ─────────────────────────────────────
 
 model Subscription {
-  id                     String             @id @default(cuid())
-  userId                 String
-  razorpaySubscriptionId String             @unique
-  razorpayPlanId         String
-  planType               PlanType
-  status                 SubscriptionStatus @default(CREATED)
-  currentPeriodStart     DateTime?
-  currentPeriodEnd       DateTime?
-  cancelledAt            DateTime?
-  endedAt                DateTime?
-  shortUrl               String?
+  id                      String             @id @default(cuid())
+  userId                  String
+  razorpaySubscriptionId  String             @unique
+  razorpayPlanId          String
+  planType                PlanType
+  status                  SubscriptionStatus @default(CREATED)
+  currentPeriodStart      DateTime?
+  currentPeriodEnd        DateTime?
+  cancelledAt             DateTime?
+  endedAt                 DateTime?
+  shortUrl                String?
   // First captured payment on this subscription — the only payment eligible
   // for the 7-day refund window.
-  firstPaymentId         String?
-  firstPaymentAt         DateTime?
+  firstPaymentId          String?
+  firstPaymentAt          DateTime?
   // Refund tracking. One refund per subscription (v1).
-  refundId               String?
-  refundedAt             DateTime?
-  refundStatus           String?
-  refundAmount           Int?
+  refundId                String?
+  refundedAt              DateTime?
+  refundStatus            String?
+  refundAmount            Int?
   // Plan-switch state. Set when the user requests a Monthly→Yearly (or
   // any plan-to-plan) change via /subscriptions/switch-plan; cleared
   // when the next subscription.charged webhook reflects the new plan.
   // Razorpay applies the switch at cycle end so continuity is preserved.
-  pendingPlanType        PlanType?
-  pendingPlanChangeAt    DateTime?
+  pendingPlanType         PlanType?
+  pendingPlanChangeAt     DateTime?
   // Dunning idempotency. We email the user once per failed-charge cycle.
   // Set to the currentPeriodEnd that failed; if it matches on a re-fired
   // pending webhook, we skip. Cleared on successful subscription.charged.
   dunningSentForPeriodEnd DateTime?
   // Receipt idempotency. Set to the Razorpay payment_id we last
   // emailed a receipt for; webhook replays for the same payment skip.
-  lastReceiptPaymentId   String?
-  createdAt              DateTime           @default(now())
-  updatedAt              DateTime           @updatedAt
+  lastReceiptPaymentId    String?
+  createdAt               DateTime           @default(now())
+  updatedAt               DateTime           @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -654,16 +656,24 @@ model LessonProgress {
 // faculty + the roadmap can join solved labs back to lessons. Deliberately
 // minimal — no submissions/history, just the attempt count and solved flag.
 model PracticeAttempt {
-  id          String    @id @default(cuid())
-  userId      String
-  problemSlug String
-  attempts    Int       @default(0)
-  solved      Boolean   @default(false)
-  solvedAt    DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id               String    @id @default(cuid())
+  userId           String
+  problemSlug      String
+  attempts         Int       @default(0)
+  solved           Boolean   @default(false)
+  solvedAt         DateTime?
+  // ─── Phase 1 (judge): server-driven summary (additive) ───
+  // `solved` now flips only on a server-side ACCEPTED CodeSubmission (kills the former
+  // client-trusted solve). These denormalize the latest/best result for fast dashboards
+  // without reading the submission history.
+  lastSubmissionId String?
+  bestScore        Float?
+  solvedLanguage   String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lastSubmission CodeSubmission? @relation("PracticeAttemptLastSubmission", fields: [lastSubmissionId], references: [id], onDelete: SetNull)
 
   @@unique([userId, problemSlug])
   @@index([userId])
@@ -740,41 +750,41 @@ model UserStreak {
 // waitlist.lexailabs.com landing, etc. One row per email; the source
 // + metadata fields let us segment by acquisition channel and campaign.
 model WaitlistEntry {
-  id             String    @id @default(cuid())
-  email          String    @unique
-  source         String
+  id     String @id @default(cuid())
+  email  String @unique
+  source String
 
   // Optional self-reported fields. Most surfaces only collect email; the
   // dedicated waitlist landing will capture name/role/org via a fuller
   // form. Schema accommodates both without forcing any one form to ask.
-  name           String?
-  phone          String?
-  organization   String?
-  role           String?
+  name         String?
+  phone        String?
+  organization String?
+  role         String?
 
   // Auto-captured attribution. Lets us tell apart organic LinkedIn
   // traffic from a paid Reddit drop without changing the form.
-  referrer       String?
-  utmSource      String?
-  utmMedium      String?
-  utmCampaign    String?
-  ipAddress      String?
-  userAgent      String?
-  metadata       Json?
+  referrer    String?
+  utmSource   String?
+  utmMedium   String?
+  utmCampaign String?
+  ipAddress   String?
+  userAgent   String?
+  metadata    Json?
 
   // Conversion funnel tracking — set when the waitlist member finally
   // signs up (and again if they subscribe). Lets us measure the full
   // signup → paid path back to the original waitlist source.
-  notified       Boolean   @default(false)
-  notifiedAt     DateTime?
+  notified        Boolean   @default(false)
+  notifiedAt      DateTime?
   convertedUserId String?
-  convertedAt    DateTime?
+  convertedAt     DateTime?
 
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
   // Bumps on every re-submission of the same email so we can prioritise
   // re-engaged visitors when we send the launch email.
-  lastSeenAt     DateTime  @default(now())
+  lastSeenAt DateTime @default(now())
 
   @@index([source])
   @@index([createdAt])
@@ -825,4 +835,171 @@ model PasswordResetToken {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("password_reset_tokens")
+}
+
+// ─── Coding Judge (Phase 1: schema only — no routes/execution wired) ──────────
+// Server-side test material + immutable submission history for the code-execution
+// judge. Designed for BOTH ML (Deep-ML style: HARNESS/CUSTOM, ALL_CLOSE, tolerance,
+// array/tensor outputs) and DSA (EXACT, stdin/stdout or function-based). Hidden tests
+// live ONLY here (backend DB), never sent to the frontend; a SAMPLE subset is the only
+// client-visible material (used by the fast client-side Run). Authoritative verdicts come
+// from the executor on Submit — Run is never persisted. See PHASE1_SCHEMA_PREP.md.
+
+enum TestVisibility {
+  SAMPLE // may be sent to the client (used by the fast client-side Run)
+  HIDDEN // backend-only; NEVER serialized to the frontend
+}
+
+enum TestKind {
+  CASE // discrete input -> expected (DSA + simple ML)
+  HARNESS // a checker PROGRAM, e.g. the existing @__test__ python harness (ML default)
+}
+
+enum IoMode {
+  FUNCTION_CALL // call a function, compare its return value
+  STDIN_STDOUT // feed stdin, compare stdout (classic DSA)
+}
+
+enum CheckerType {
+  EXACT // byte/string or structural equality
+  ALL_CLOSE // numpy.allclose-style numeric compare with rtol/atol (ML default)
+  CUSTOM // problem-supplied server-side checker / harness assertions
+}
+
+enum SubmissionContext {
+  PRACTICE
+  ASSESSMENT
+}
+
+// Locked verdict enum. WRONG_ANSWER comes from per-test checking (never the browser);
+// PENDING/ERROR are internal states. The executor shim's exit-code verdict is only a
+// preview — authoritative verdicts are computed here from SubmissionTestResult rows.
+enum CodeVerdict {
+  ACCEPTED
+  WRONG_ANSWER
+  TIME_LIMIT_EXCEEDED
+  MEMORY_LIMIT_EXCEEDED
+  RUNTIME_ERROR
+  COMPILATION_ERROR
+  PENDING
+  ERROR
+}
+
+enum TestResultStatus {
+  PASS
+  FAIL
+  ERROR
+}
+
+// Server-side test material for a problem. HIDDEN by default; a SAMPLE subset is the only
+// client-visible material. Handles ML harness, ML discrete, and DSA discrete in one shape
+// (kind + checkerType + ioMode). problemSlug ties to the frontend practice catalog.
+model ProblemTest {
+  id             String         @id @default(cuid())
+  problemSlug    String
+  order          Int            @default(0)
+  visibility     TestVisibility @default(HIDDEN)
+  kind           TestKind       @default(CASE)
+  ioMode         IoMode         @default(FUNCTION_CALL)
+  checkerType    CheckerType    @default(EXACT)
+  // For HARNESS / language-specific cases.
+  language       String?
+  // Discrete CASE fields. expectedOutput is TYPED JSON ({dtype,shape,values} | scalar |
+  // string) — never a bare string column, so array/tensor outputs are first-class.
+  input          Json?
+  expectedOutput Json?
+  // ALL_CLOSE tolerances (numpy.allclose semantics). Null = service default (1e-5 / 1e-8).
+  rtol           Float?
+  atol           Float?
+  // HARNESS / CUSTOM: the checker program (e.g. the @__test__ python harness).
+  harness        String?
+  // Partial-scoring weight for this test.
+  weight         Int            @default(1)
+  // Optional org-scoping for assessment-private tests; null = global catalog test.
+  organizationId String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  results SubmissionTestResult[]
+
+  @@index([problemSlug, visibility])
+  @@map("problem_tests")
+}
+
+// Mutable latest code per (user, problem) — LeetCode-style draft. Survives indefinitely
+// (a user returning weeks/months later sees their last code). Upserted on Run / autosave.
+model PracticeDraft {
+  id          String   @id @default(cuid())
+  userId      String
+  problemSlug String
+  language    String
+  code        String // editor buffer; service caps at 256 KB
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, problemSlug])
+  @@index([userId])
+  @@map("practice_drafts")
+}
+
+// Immutable submission history (append-only). One row per Submit (Run is NEVER stored).
+// No updatedAt — rows are never mutated. Ordering via the createdAt index (cuid ids match
+// house style; switch to ULID/UUIDv7 later if strict time-sortable ids are needed).
+model CodeSubmission {
+  id                   String            @id @default(cuid())
+  userId               String
+  problemSlug          String
+  context              SubmissionContext @default(PRACTICE)
+  // Set for ASSESSMENT submits (soft references — submissions stay valid/immutable even
+  // if the assessment is later removed).
+  assessmentId         String?
+  assessmentQuestionId String?
+  // Denormalized tenant snapshot for B2B analytics (null for B2C/global practice).
+  organizationId       String?
+  sectionId            String?
+  language             String
+  code                 String // immutable snapshot; service caps at 256 KB
+  verdict              CodeVerdict       @default(PENDING)
+  passedCount          Int               @default(0)
+  totalCount           Int               @default(0)
+  score                Float? // weighted
+  runtimeMs            Int?
+  memoryKb             Int?
+  testVersion          String? // stamp of the suite version judged
+  createdAt            DateTime          @default(now())
+
+  user            User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  testResults     SubmissionTestResult[]
+  lastForAttempts PracticeAttempt[]      @relation("PracticeAttemptLastSubmission")
+
+  @@index([userId, problemSlug])
+  @@index([createdAt])
+  @@index([assessmentId])
+  @@map("code_submissions")
+}
+
+// One per-test outcome of a submission (separate table, not JSON — enables per-test
+// analytics and partial scoring). HIDDEN detail (message/diff) is redacted by the
+// serializer before reaching students.
+model SubmissionTestResult {
+  id               String           @id @default(cuid())
+  submissionId     String
+  testId           String? // ProblemTest (null for harness sub-assertions)
+  name             String // e.g. the @__test__ label
+  visibility       TestVisibility   @default(HIDDEN)
+  status           TestResultStatus
+  checkerType      CheckerType
+  toleranceApplied Json? // {rtol, atol}
+  numericDiff      Json? // {maxAbs, maxRel} for ML feedback
+  message          String? // failure message (redacted for HIDDEN)
+  runtimeMs        Int?
+  createdAt        DateTime         @default(now())
+
+  submission CodeSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  test       ProblemTest?   @relation(fields: [testId], references: [id], onDelete: SetNull)
+
+  @@index([submissionId])
+  @@map("submission_test_results")
 }
