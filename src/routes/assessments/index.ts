@@ -2,10 +2,16 @@ import type { FastifyInstance } from "fastify";
 import { AssessmentStatus, AssessmentVisibility, AttemptStatus } from "@prisma/client";
 import type { AssessmentAttempt } from "@prisma/client";
 import { authenticate } from "../../hooks/auth.js";
-import { attemptStateSchema } from "../../schemas/assessment.js";
+import {
+  attemptStateSchema,
+  assessmentRunCodeSchema,
+  assessmentSubmitCodeSchema,
+} from "../../schemas/assessment.js";
 import { serializeQuestionForStudent } from "../../lib/assessments.js";
 import { autoGrade, writeAutoGradeEntries } from "../../lib/grading.js";
 import { isAttemptExpired, autoFinalizeAttempt } from "../../lib/attemptLifecycle.js";
+import { runAssessmentCode, submitAssessmentCode } from "../../lib/assessment.service.js";
+import { NoTestsError } from "../../lib/judge.js";
 
 /**
  * Student-facing assessment engine (/assessments). A student sees PUBLISHED
@@ -379,4 +385,110 @@ export default async function studentAssessmentRoutes(app: FastifyInstance) {
       }),
     });
   });
+
+  // ─── Phase 2: coding questions (CATALOG) — run / submit within an attempt ───
+  // The question's catalogSlug is the practice problem slug, so the SAME
+  // problem_tests back both practice and assessments. Judging is delegated to the
+  // SHARED judge (assessment.service → judge.ts). Attempt status + the existing
+  // timer (attemptLifecycle) are enforced here before any execution.
+
+  async function loadCodingQuestion(userId: string, assessmentId: string, qid: string) {
+    const a = await loadVisible(userId, assessmentId);
+    if (!a) return { error: "ASSESSMENT_NOT_FOUND" as const };
+    const q = a.questions.find((x) => x.id === qid);
+    if (!q) return { error: "QUESTION_NOT_FOUND" as const };
+    if (q.kind !== "CATALOG" || !q.catalogSlug) return { error: "NOT_CODING" as const };
+    return { a, q, slug: q.catalogSlug };
+  }
+
+  // POST /assessments/:id/questions/:qid/run — SAMPLE only; autosave; no submission.
+  app.post<{ Params: { id: string; qid: string } }>(
+    "/:id/questions/:qid/run",
+    async (request, reply) => {
+      const userId = request.currentUser!.userId;
+      const body = assessmentRunCodeSchema.safeParse(request.body);
+      if (!body.success) {
+        return reply.status(400).send({ error: "Validation failed", details: body.error.flatten().fieldErrors });
+      }
+      const ctx = await loadCodingQuestion(userId, request.params.id, request.params.qid);
+      if ("error" in ctx) {
+        return reply.status(ctx.error === "NOT_CODING" ? 400 : 404).send({ error: ctx.error });
+      }
+      const attempt = await getOwnAttempt(userId, ctx.a.id);
+      if (!attempt || attempt.status === "SUBMITTED" || attempt.status === "LOCKED") {
+        return reply.status(409).send({ error: "ATTEMPT_NOT_OPEN" });
+      }
+      if (isAttemptExpired(ctx.a, attempt)) {
+        await autoFinalizeAttempt(app.prisma, ctx.a, attempt);
+        return reply.status(409).send({ error: "TIME_UP", message: "Time is up — your attempt was submitted automatically." });
+      }
+      const result = await runAssessmentCode(app.prisma, {
+        slug: ctx.slug,
+        language: body.data.language,
+        code: body.data.code,
+      });
+      // Autosave the draft code for this question + remember the active question.
+      const state = readState(attempt);
+      state.draftCode = { ...state.draftCode, [ctx.q.id]: body.data.code };
+      await app.prisma.assessmentAttempt.update({
+        where: { id: attempt.id },
+        data: { answers: state as object, lastActiveQuestionId: ctx.q.id },
+      });
+      return reply.send({ success: true, result });
+    }
+  );
+
+  // POST /assessments/:id/questions/:qid/submit — full suite; immutable CodeSubmission.
+  app.post<{ Params: { id: string; qid: string } }>(
+    "/:id/questions/:qid/submit",
+    async (request, reply) => {
+      const userId = request.currentUser!.userId;
+      const body = assessmentSubmitCodeSchema.safeParse(request.body);
+      if (!body.success) {
+        return reply.status(400).send({ error: "Validation failed", details: body.error.flatten().fieldErrors });
+      }
+      const ctx = await loadCodingQuestion(userId, request.params.id, request.params.qid);
+      if ("error" in ctx) {
+        return reply.status(ctx.error === "NOT_CODING" ? 400 : 404).send({ error: ctx.error });
+      }
+      const attempt = await getOwnAttempt(userId, ctx.a.id);
+      if (!attempt || attempt.status === "SUBMITTED" || attempt.status === "LOCKED") {
+        return reply.status(409).send({ error: "ATTEMPT_NOT_OPEN" });
+      }
+      if (isAttemptExpired(ctx.a, attempt)) {
+        await autoFinalizeAttempt(app.prisma, ctx.a, attempt);
+        return reply.status(409).send({ error: "TIME_UP", message: "Time is up — your attempt was submitted automatically." });
+      }
+      try {
+        const result = await submitAssessmentCode(
+          app.prisma,
+          {
+            userId,
+            attemptId: attempt.id,
+            assessmentId: ctx.a.id,
+            questionId: ctx.q.id,
+            organizationId: ctx.a.organizationId,
+            sectionId: ctx.a.sectionId,
+            ipAddress: request.ip,
+            userAgent: request.headers["user-agent"] ?? null,
+            clientFingerprint: body.data.fingerprint ?? null,
+          },
+          { slug: ctx.slug, language: body.data.language, code: body.data.code }
+        );
+        // Preserve the latest code as the draft for this question too.
+        const state = readState(attempt);
+        state.draftCode = { ...state.draftCode, [ctx.q.id]: body.data.code };
+        await app.prisma.assessmentAttempt.update({
+          where: { id: attempt.id },
+          data: { answers: state as object, lastActiveQuestionId: ctx.q.id },
+        });
+        return reply.send({ success: true, result });
+      } catch (err) {
+        if (err instanceof NoTestsError) {
+          return reply.status(422).send({ error: "NO_TESTS", message: "This problem has no tests configured yet." });
+        }
+        throw err;
+      }
+    }
+  );
 }
