@@ -327,6 +327,14 @@ model Assessment {
   shuffleQuestions  Boolean              @default(false)
   navigationMode    NavigationMode       @default(FREE)
   autoSubmit        Boolean              @default(true)
+  // ─── Proctoring policy (v1; opt-in, defaults off so existing rows are unaffected) ───
+  requireFullscreen Boolean              @default(false)
+  blockClipboard    Boolean              @default(false)
+  detectTabSwitch   Boolean              @default(false)
+  // Warnable-violation budget (tab switch / copy / paste); the Nth warnable
+  // violation auto-submits. FULLSCREEN_EXIT is NOT counted here — it terminates
+  // the attempt immediately (see IntegrityEventType).
+  maxWarnings       Int                  @default(3)
   // Optional scheduling metadata surfaced to students; not enforced server-
   // side in this slice (no timed-attempt engine yet).
   durationMinutes   Int?
@@ -419,30 +427,34 @@ model GradeEntry {
 // membership — are first-class. `answers` holds the in-progress/submitted
 // response map; `remainingAttempts` + `status` drive the attempt-policy gate.
 model AssessmentAttempt {
-  id                String        @id @default(cuid())
-  assessmentId      String
-  userId            String
-  startedAt         DateTime      @default(now())
-  exitedAt          DateTime?
-  remainingAttempts Int           @default(1)
-  status            AttemptStatus @default(IN_PROGRESS)
-  answers           Json?
+  id                   String        @id @default(cuid())
+  assessmentId         String
+  userId               String
+  startedAt            DateTime      @default(now())
+  exitedAt             DateTime?
+  remainingAttempts    Int           @default(1)
+  status               AttemptStatus @default(IN_PROGRESS)
+  answers              Json?
   // ─── Phase 6: scoring (additive) ───
   // score is the final awarded total (auto + any faculty review marks); it is
   // provisional while pendingReview is true (auto portion only) and final once
   // gradedAt is set. maxScore is the sum of all question points. reviewMarks
   // holds faculty-assigned marks for non-auto questions ({ questionId: marks }).
-  score             Float?
-  maxScore          Float?
-  submittedAt       DateTime?
-  gradedAt          DateTime?
-  pendingReview     Boolean       @default(false)
-  reviewMarks       Json?
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
+  score                Float?
+  maxScore             Float?
+  submittedAt          DateTime?
+  gradedAt             DateTime?
+  pendingReview        Boolean       @default(false)
+  reviewMarks          Json?
+  // Last question the student was viewing — drives resume + proctoring context.
+  lastActiveQuestionId String?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
 
-  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
-  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assessment Assessment           @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  user       User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  events     AssessmentEvent[]
+  integrity  AssessmentIntegrity?
 
   @@unique([assessmentId, userId])
   @@index([userId])
@@ -477,6 +489,84 @@ model AssessmentQuestion {
 
   @@index([assessmentId])
   @@map("assessment_questions")
+}
+
+// ─── Proctoring (v1): integrity event log + per-attempt aggregate ───────────────
+// WARNABLE events consume the warning budget (Assessment.maxWarnings); the Nth one
+// auto-submits the attempt. v1 warnable set = TAB_SWITCH, COPY_ATTEMPT, PASTE_ATTEMPT.
+// FULLSCREEN_EXIT is NOT warnable — the service terminates the attempt IMMEDIATELY
+// (terminatedReason="FULLSCREEN_EXIT", autoFinalizeAttempt), with no warning
+// increment and no grace. Remaining types are logged-only for the integrity report.
+enum IntegrityEventType {
+  TAB_SWITCH
+  FULLSCREEN_EXIT
+  FULLSCREEN_ENTER
+  COPY_ATTEMPT
+  CUT_ATTEMPT
+  PASTE_ATTEMPT
+  CONTEXT_MENU
+  WARNING_ISSUED
+  AUTO_SUBMIT
+  FOCUS_LOSS
+  RESUME
+}
+
+// Append-only audit trail: one row per integrity signal. Server `createdAt` is the
+// authoritative time; `clientTs` is advisory. `warnable` records whether this event
+// consumed the warning budget at the moment it was processed.
+model AssessmentEvent {
+  id           String             @id @default(cuid())
+  attemptId    String
+  assessmentId String
+  userId       String
+  type         IntegrityEventType
+  questionId   String?
+  warnable     Boolean            @default(false)
+  ipAddress    String?
+  userAgent    String?
+  fingerprint  String?
+  clientTs     DateTime?
+  meta         Json? // {hiddenMs, selectionLen, idempotencyKey, ...}
+  createdAt    DateTime           @default(now())
+
+  attempt AssessmentAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@index([attemptId])
+  @@index([assessmentId, type])
+  @@map("assessment_events")
+}
+
+// One row per attempt (1:1 with AssessmentAttempt): live per-type counters + the
+// warning state machine. `warningsIssued` counts WARNABLE violations; when it reaches
+// `maxWarnings` the attempt is `terminated` and auto-submitted.
+model AssessmentIntegrity {
+  id                  String    @id @default(cuid())
+  attemptId           String    @unique
+  assessmentId        String
+  userId              String
+  tabSwitchCount      Int       @default(0)
+  fullscreenExitCount Int       @default(0)
+  copyAttemptCount    Int       @default(0)
+  pasteAttemptCount   Int       @default(0)
+  contextMenuCount    Int       @default(0)
+  focusLossCount      Int       @default(0)
+  warningsIssued      Int       @default(0)
+  maxWarnings         Int       @default(3)
+  terminated          Boolean   @default(false)
+  terminatedReason    String?
+  terminatedAt        DateTime?
+  // Device snapshot (first seen) for cross-checking later submissions.
+  firstIp             String?
+  firstUserAgent      String?
+  firstFingerprint    String?
+  lastEventAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  attempt AssessmentAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@index([assessmentId])
+  @@map("assessment_integrity")
 }
 
 // Phase 8: the AssessmentAssignment join table was removed. An assessment is
@@ -956,9 +1046,15 @@ model CodeSubmission {
   // if the assessment is later removed).
   assessmentId         String?
   assessmentQuestionId String?
+  // Ties an ASSESSMENT submit to its AssessmentAttempt (soft ref; null for practice).
+  attemptId            String?
   // Denormalized tenant snapshot for B2B analytics (null for B2C/global practice).
   organizationId       String?
   sectionId            String?
+  // Anti-cheat snapshot captured at submit time (ASSESSMENT only; null for practice).
+  ipAddress            String?
+  userAgent            String?
+  clientFingerprint    String?
   language             String
   code                 String // immutable snapshot; service caps at 256 KB
   verdict              CodeVerdict       @default(PENDING)
@@ -977,6 +1073,10 @@ model CodeSubmission {
   @@index([userId, problemSlug])
   @@index([createdAt])
   @@index([assessmentId])
+  @@index([attemptId])
+  // Supports per-question submission rate-limiting + "best submission per question"
+  // (the count of rows per (attempt, question) is the rate-limit signal — no extra column).
+  @@index([attemptId, assessmentQuestionId])
   @@map("code_submissions")
 }
 
