@@ -17,9 +17,13 @@ type AnswerMap = Record<string, unknown>;
 const AUTO_TYPES = new Set(["MCQ", "MULTI_SELECT"]);
 
 function questionType(q: AssessmentQuestion): string {
-  if (q.kind === "CATALOG") return "CODING"; // catalog = coding problem → manual
+  if (q.kind === "CATALOG") return "CODING"; // catalog = coding problem
   const c = (q.content ?? {}) as Record<string, unknown>;
-  return typeof c.type === "string" ? c.type : "SHORT_ANSWER";
+  // Normalize case + the multi-select spelling (builder writes UPPERCASE; seed/legacy
+  // may write lowercase) so objective auto-grading matches regardless of source.
+  if (typeof c.type !== "string") return "SHORT_ANSWER";
+  const t = c.type.toUpperCase().replace(/-/g, "_");
+  return t === "MULTISELECT" ? "MULTI_SELECT" : t;
 }
 
 function points(q: AssessmentQuestion): number {
@@ -133,6 +137,71 @@ export function applyReviewMarks(
     maxScore: auto.maxScore,
     pendingQuestionIds: stillPending,
   };
+}
+
+export interface GradedAttempt {
+  score: number;
+  maxScore: number;
+  pendingQuestionIds: string[];
+  perQuestion: PerQuestionResult[];
+  /** Marks auto-derived from each CATALOG coding question's best submission. */
+  codingMarks: Record<string, number>;
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * Phase 4 — full attempt grade INCLUDING coding. Objective questions grade via
+ * autoGrade; each CATALOG coding question is auto-graded from the BEST
+ * CodeSubmission for (attemptId, questionId): awarded = clamp(bestScore,0,1) *
+ * points (ACCEPTED→full, partial→proportional, no submission→0). Remaining
+ * non-auto questions (subjective/written, custom coding) fall back to faculty
+ * reviewMarks; whatever is still unmarked stays pending.
+ */
+export async function gradeAttempt(
+  prisma: PrismaClient,
+  questions: AssessmentQuestion[],
+  attemptId: string,
+  answers: AnswerMap,
+  reviewMarks: Record<string, number>
+): Promise<GradedAttempt> {
+  const base = autoGrade(questions, answers);
+  const qById = new Map(questions.map((q) => [q.id, q]));
+
+  // Best coding submission per CATALOG question → awarded marks.
+  const codingMarks: Record<string, number> = {};
+  for (const q of questions) {
+    if (q.kind !== "CATALOG") continue;
+    const best = await prisma.codeSubmission.findFirst({
+      where: { attemptId, assessmentQuestionId: q.id, context: "ASSESSMENT" },
+      orderBy: [{ score: "desc" }, { createdAt: "desc" }],
+      select: { score: true },
+    });
+    const ratio = best && typeof best.score === "number" ? Math.max(0, Math.min(1, best.score)) : 0;
+    codingMarks[q.id] = round2(ratio * points(q));
+  }
+
+  let score = 0;
+  const pendingQuestionIds: string[] = [];
+  const perQuestion: PerQuestionResult[] = base.perQuestion.map((pq) => {
+    if (pq.auto) { score += pq.awarded ?? 0; return pq; }
+    const q = qById.get(pq.questionId)!;
+    if (q.kind === "CATALOG") {
+      const awarded = codingMarks[pq.questionId] ?? 0;
+      score += awarded;
+      return { ...pq, auto: true, awarded }; // coding is now auto-graded
+    }
+    const raw = reviewMarks[pq.questionId];
+    if (typeof raw === "number" && !Number.isNaN(raw)) {
+      const awarded = Math.max(0, Math.min(pq.points, raw));
+      score += awarded;
+      return { ...pq, awarded };
+    }
+    pendingQuestionIds.push(pq.questionId);
+    return pq;
+  });
+
+  return { score: round2(score), maxScore: base.maxScore, pendingQuestionIds, perQuestion, codingMarks };
 }
 
 /**

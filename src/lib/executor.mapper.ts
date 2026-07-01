@@ -81,10 +81,10 @@ export function aggregateVerdict(outcomes: ExecOutcome[]): AggregateResult {
   const totalCount = all.length;
   const score = totalCount ? passedCount / totalCount : 0;
   const runtimeMs = sumOrNull(outcomes.map((o) => o.response.runtimeMs));
-  const memoryKb = maxOrNull(outcomes.map((o) => o.response.memoryKb));
+  const memoryMb = maxOrNull(outcomes.map((o) => o.response.memoryMb));
 
   const execVerdicts = outcomes.map((o) => mapExecutorVerdict(o.response.verdict));
-  const base = { passedCount, totalCount, score, runtimeMs, memoryKb };
+  const base = { passedCount, totalCount, score, runtimeMs, memoryMb };
 
   if (execVerdicts.includes(CodeVerdict.COMPILATION_ERROR)) {
     return { ...base, verdict: CodeVerdict.COMPILATION_ERROR };

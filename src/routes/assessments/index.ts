@@ -1,16 +1,18 @@
 import type { FastifyInstance } from "fastify";
-import { AssessmentStatus, AssessmentVisibility, AttemptStatus } from "@prisma/client";
+import { AssessmentStatus, AssessmentVisibility, AttemptStatus, Prisma } from "@prisma/client";
 import type { AssessmentAttempt } from "@prisma/client";
 import { authenticate } from "../../hooks/auth.js";
 import {
   attemptStateSchema,
   assessmentRunCodeSchema,
   assessmentSubmitCodeSchema,
+  assessmentIntegritySchema,
 } from "../../schemas/assessment.js";
 import { serializeQuestionForStudent } from "../../lib/assessments.js";
-import { autoGrade, writeAutoGradeEntries } from "../../lib/grading.js";
+import { autoGrade, gradeAttempt, writeAutoGradeEntries } from "../../lib/grading.js";
 import { isAttemptExpired, autoFinalizeAttempt } from "../../lib/attemptLifecycle.js";
 import { runAssessmentCode, submitAssessmentCode } from "../../lib/assessment.service.js";
+import { recordIntegrityEvent } from "../../lib/integrity.service.js";
 import { NoTestsError } from "../../lib/judge.js";
 
 /**
@@ -322,9 +324,12 @@ export default async function studentAssessmentRoutes(app: FastifyInstance) {
     const parsed = attemptStateSchema.safeParse(request.body ?? {});
     const state = parsed.success ? mergeState(attempt, parsed.data) : readState(attempt);
 
-    const graded = autoGrade(a.questions, state.answers);
-    const fullyAuto = graded.pendingQuestionIds.length === 0;
+    const prevReview = (attempt.reviewMarks ?? {}) as Record<string, number>;
+    // Phase 4: coding questions auto-graded from their best CodeSubmission.
+    const graded = await gradeAttempt(app.prisma, a.questions, attempt.id, state.answers, prevReview);
+    const fullyGraded = graded.pendingQuestionIds.length === 0;
     const now = new Date();
+    const mergedReview = { ...prevReview, ...graded.codingMarks };
 
     const updated = await app.prisma.assessmentAttempt.update({
       where: { id: attempt.id },
@@ -332,16 +337,17 @@ export default async function studentAssessmentRoutes(app: FastifyInstance) {
         answers: state as object,
         status: AttemptStatus.SUBMITTED,
         submittedAt: now,
-        score: graded.autoScore,
+        score: graded.score,
         maxScore: graded.maxScore,
-        pendingReview: !fullyAuto,
-        gradedAt: fullyAuto ? now : null,
+        reviewMarks: mergedReview as Prisma.InputJsonValue,
+        pendingReview: !fullyGraded,
+        gradedAt: fullyGraded ? now : null,
       },
     });
 
-    // Fully objective → grade flows straight into any AUTO gradebook component.
-    if (fullyAuto) {
-      await writeAutoGradeEntries(app.prisma, a.id, userId, graded.autoScore, graded.maxScore);
+    // Fully graded (objective + coding, nothing left for faculty) → flows to gradebook.
+    if (fullyGraded) {
+      await writeAutoGradeEntries(app.prisma, a.id, userId, graded.score, graded.maxScore);
     }
 
     return reply.send({ attempt: toAttempt(updated), attemptPolicy: a.attemptPolicy });
@@ -361,13 +367,14 @@ export default async function studentAssessmentRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "No submitted attempt" });
     }
     const state = readState(attempt);
-    const graded = autoGrade(a.questions, state.answers);
     const reviewMarks = (attempt.reviewMarks ?? {}) as Record<string, number>;
+    // Phase 4: coding-aware view (coding shows as auto-graded with awarded marks).
+    const graded = await gradeAttempt(app.prisma, a.questions, attempt.id, state.answers, reviewMarks);
 
     return reply.send({
       title: a.title,
       status: attempt.status,
-      score: attempt.score ?? graded.autoScore,
+      score: attempt.score ?? graded.score,
       maxScore: attempt.maxScore ?? graded.maxScore,
       pendingReview: attempt.pendingReview,
       submittedAt: attempt.submittedAt?.toISOString() ?? null,
@@ -380,10 +387,47 @@ export default async function studentAssessmentRoutes(app: FastifyInstance) {
           points: pq.points,
           type: pq.type,
           auto: pq.auto,
-          awarded: pq.auto ? pq.awarded : reviewMarks[q.id] ?? null,
+          awarded: pq.awarded,
         };
       }),
     });
+  });
+
+  // ─── Phase 3: proctoring integrity — server-authoritative warning budget ───
+  // POST /assessments/:id/attempt/integrity — record a signal; the SERVER decides
+  // warnings/termination. Client trusts the response (warningsIssued/remaining/
+  // terminated/action), never its own count.
+  app.post<{ Params: { id: string } }>("/:id/attempt/integrity", async (request, reply) => {
+    const userId = request.currentUser!.userId;
+    const body = assessmentIntegritySchema.safeParse(request.body);
+    if (!body.success) {
+      return reply.status(400).send({ error: "Validation failed", details: body.error.flatten().fieldErrors });
+    }
+    const a = await loadVisible(userId, request.params.id);
+    if (!a) return reply.status(404).send({ error: "Assessment not found" });
+    const attempt = await getOwnAttempt(userId, a.id);
+    if (!attempt) return reply.status(404).send({ error: "No attempt" });
+    if (attempt.status === "SUBMITTED" || attempt.status === "LOCKED") {
+      return reply.send({ warningsIssued: 0, remaining: 0, terminated: true, action: "NONE" });
+    }
+    // Reuse the timer gate: a timed-out attempt finalizes here too.
+    if (isAttemptExpired(a, attempt)) {
+      await autoFinalizeAttempt(app.prisma, a, attempt);
+      return reply.send({ warningsIssued: 0, remaining: 0, terminated: true, action: "AUTO_SUBMITTED" });
+    }
+    const meta = body.data.meta as Record<string, unknown> | undefined;
+    const result = await recordIntegrityEvent(app.prisma, {
+      assessment: a,
+      attempt,
+      type: body.data.type,
+      questionId: body.data.questionId ?? null,
+      clientTs: body.data.clientTs ?? null,
+      meta,
+      ipAddress: request.ip,
+      userAgent: request.headers["user-agent"] ?? null,
+      fingerprint: (meta?.fingerprint as string | undefined) ?? null,
+    });
+    return reply.send(result);
   });
 
   // ─── Phase 2: coding questions (CATALOG) — run / submit within an attempt ───

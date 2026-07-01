@@ -29,7 +29,7 @@ export interface ExecuteResponse {
   verdict: string; // executor-level PREVIEW verdict (exit-code based)
   runtimeMs: number | null;
   cpuMs?: number | null;
-  memoryKb: number | null;
+  memoryMb: number | null;
   exitCode: number | null;
   signal: string | null;
   stdout: string;
@@ -92,5 +92,5 @@ export interface AggregateResult {
   totalCount: number;
   score: number; // 0..1 (passed / total)
   runtimeMs: number | null;
-  memoryKb: number | null;
+  memoryMb: number | null;
 }

@@ -125,7 +125,8 @@ export async function submitPracticeCode(
         totalCount: agg.totalCount,
         score: agg.score,
         runtimeMs: agg.runtimeMs ?? undefined,
-        memoryKb: agg.memoryKb ?? undefined,
+        // agg.memoryMb is MB; DB column `memoryKb` (Int) stores rounded MB (see memory-unit fix).
+        memoryKb: agg.memoryMb != null ? Math.round(agg.memoryMb) : undefined,
       },
     });
 

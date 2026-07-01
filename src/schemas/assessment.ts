@@ -138,6 +138,18 @@ export const assessmentRunCodeSchema = z.object({
 
 export const assessmentSubmitCodeSchema = assessmentRunCodeSchema;
 
+// Integrity (proctoring) event reported by the client. Only client-sendable
+// signal types are accepted; WARNING_ISSUED / AUTO_SUBMIT / RESUME are server-only.
+export const assessmentIntegritySchema = z.object({
+  type: z.enum([
+    "TAB_SWITCH", "FOCUS_LOSS", "COPY_ATTEMPT", "PASTE_ATTEMPT",
+    "CUT_ATTEMPT", "CONTEXT_MENU", "FULLSCREEN_EXIT", "FULLSCREEN_ENTER",
+  ]),
+  questionId: z.string().optional(),
+  clientTs: z.string().optional(),
+  meta: z.record(z.unknown()).optional(),
+});
+
 export type AttemptStateInput = z.infer<typeof attemptStateSchema>;
 export type QuestionInput = z.infer<typeof questionInputSchema>;
 export type CreateAssessmentInput = z.infer<typeof createAssessmentSchema>;

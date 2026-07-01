@@ -36,7 +36,7 @@ export interface RunResultView {
   totalCount: number;
   score: number;
   runtimeMs: number | null;
-  memoryKb: number | null;
+  memoryMb: number | null;
   tests: SampleTestView[]; // Run executes SAMPLE tests only — all safe to show
   note?: string;
 }
@@ -54,7 +54,7 @@ export function serializeRunResult(
     totalCount: agg?.totalCount ?? 0,
     score: agg?.score ?? 0,
     runtimeMs: agg?.runtimeMs ?? null,
-    memoryKb: agg?.memoryKb ?? null,
+    memoryMb: agg?.memoryMb ?? null,
     tests: perTest.map(sampleView),
     ...(note ? { note } : {}),
   };
@@ -68,7 +68,7 @@ export interface SubmissionResultView {
   totalCount: number;
   score: number;
   runtimeMs: number | null;
-  memoryKb: number | null;
+  memoryMb: number | null;
   language: string;
   createdAt: Date;
   sampleTests: SampleTestView[];
@@ -100,7 +100,8 @@ export function serializeSubmissionResult(
     totalCount: submission.totalCount,
     score: submission.score ?? 0,
     runtimeMs: submission.runtimeMs,
-    memoryKb: submission.memoryKb,
+    // DB column `memoryKb` (Int) now stores integer MB — see executor memory-unit fix.
+    memoryMb: submission.memoryKb,
     language: submission.language,
     createdAt: submission.createdAt,
     sampleTests: sample.map(sampleView),

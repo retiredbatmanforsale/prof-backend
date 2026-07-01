@@ -1,5 +1,5 @@
-import { AttemptStatus, type PrismaClient } from "@prisma/client";
-import { autoGrade, writeAutoGradeEntries } from "./grading.js";
+import { AttemptStatus, Prisma, type PrismaClient } from "@prisma/client";
+import { autoGrade, gradeAttempt, writeAutoGradeEntries } from "./grading.js";
 
 /**
  * Timed-assessment enforcement, server-side.
@@ -50,26 +50,30 @@ export function isAttemptExpired(
 export async function autoFinalizeAttempt(
   prisma: PrismaClient,
   assessment: { id: string; questions: Parameters<typeof autoGrade>[0] },
-  attempt: { id: string; userId: string; answers: unknown }
+  attempt: { id: string; userId: string; answers: unknown; reviewMarks?: unknown }
 ) {
   const saved = (attempt.answers ?? {}) as { answers?: Record<string, unknown> };
-  const graded = autoGrade(assessment.questions, saved.answers ?? {});
-  const fullyAuto = graded.pendingQuestionIds.length === 0;
+  const prevReview = (attempt.reviewMarks ?? {}) as Record<string, number>;
+  // Phase 4: coding questions are auto-graded from their best CodeSubmission.
+  const graded = await gradeAttempt(prisma, assessment.questions, attempt.id, saved.answers ?? {}, prevReview);
+  const fullyGraded = graded.pendingQuestionIds.length === 0;
   const now = new Date();
+  const mergedReview = { ...prevReview, ...graded.codingMarks };
 
   const updated = await prisma.assessmentAttempt.update({
     where: { id: attempt.id },
     data: {
       status: AttemptStatus.SUBMITTED,
       submittedAt: now,
-      score: graded.autoScore,
+      score: graded.score,
       maxScore: graded.maxScore,
-      pendingReview: !fullyAuto,
-      gradedAt: fullyAuto ? now : null,
+      reviewMarks: mergedReview as Prisma.InputJsonValue,
+      pendingReview: !fullyGraded,
+      gradedAt: fullyGraded ? now : null,
     },
   });
-  if (fullyAuto) {
-    await writeAutoGradeEntries(prisma, assessment.id, attempt.userId, graded.autoScore, graded.maxScore);
+  if (fullyGraded) {
+    await writeAutoGradeEntries(prisma, assessment.id, attempt.userId, graded.score, graded.maxScore);
   }
   return updated;
 }
