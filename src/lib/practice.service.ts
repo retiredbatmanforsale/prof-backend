@@ -15,7 +15,7 @@ import { Prisma, type PrismaClient, type ProblemTest } from "@prisma/client";
 import { execute } from "./executor.client.js";
 import {
   buildCaseProgram,
-  buildHarnessProgram,
+  buildCombinedHarnessProgram,
   DEFAULT_ATOL,
   DEFAULT_RTOL,
   parseResults,
@@ -74,11 +74,23 @@ function toSpec(row: ProblemTest): TestSpec {
   };
 }
 
+/** "HARNESS" | "CASE" | "MIXED" — drives mode-aware perf display on the client. */
+export type ProblemMode = "HARNESS" | "CASE" | "MIXED";
+
+export function deriveMode(rows: Pick<ProblemTest, "kind">[]): ProblemMode {
+  const hasHarness = rows.some((r) => r.kind === "HARNESS");
+  const hasCase = rows.some((r) => r.kind === "CASE");
+  if (hasHarness && hasCase) return "MIXED";
+  return hasCase ? "CASE" : "HARNESS";
+}
+
 /**
- * Run the user's code against the given test rows on the executor and return one
- * ExecOutcome per executor invocation (one per HARNESS row + one batched call
- * for all CASE rows). The backend attributes every assertion back to its row's
- * visibility/checkerType so the verdict + redaction stay correct.
+ * Run the user's code against the given test rows on the executor. ALL HARNESS
+ * rows of the problem (e.g. SAMPLE + HIDDEN) are combined into ONE program/process
+ * so numpy is imported once — roughly halving wall time versus one execute per row
+ * — and CASE rows run as one batched call. Results are attributed back to each
+ * row's visibility/checkerType (HARNESS: by block position; CASE: by id) so the
+ * verdict + hidden-test redaction stay correct.
  */
 async function judge(
   language: string,
@@ -86,23 +98,48 @@ async function judge(
   rows: ProblemTest[]
 ): Promise<ExecOutcome[]> {
   const outcomes: ExecOutcome[] = [];
-  const harnessRows = rows.filter((r) => r.kind === "HARNESS");
+  const harnessRows = rows.filter((r) => r.kind === "HARNESS" && r.harness);
   const caseRows = rows.filter((r) => r.kind === "CASE");
 
-  for (const row of harnessRows) {
-    if (!row.harness) continue;
-    const program = buildHarnessProgram(language, userCode, row.harness);
+  if (harnessRows.length > 0) {
+    const { program, counts } = buildCombinedHarnessProgram(
+      language,
+      userCode,
+      harnessRows.map((r) => r.harness as string)
+    );
     const response = await execute({ language, code: program });
     const raw = parseResults(response.stdout);
     if (raw === null) {
       outcomes.push({ response, results: [], sentinelFound: false });
     } else {
-      const results = buildPerTestResults(raw, {
-        testId: row.id,
-        visibility: row.visibility,
-        checkerType: row.checkerType,
-        tolerance: toleranceFor(row),
+      // Attribute the flat result list back to each row by block position.
+      const results: PerTestResult[] = [];
+      let cursor = 0;
+      harnessRows.forEach((row, idx) => {
+        const slice = raw.slice(cursor, cursor + counts[idx]);
+        cursor += counts[idx];
+        results.push(
+          ...buildPerTestResults(slice, {
+            testId: row.id,
+            visibility: row.visibility,
+            checkerType: row.checkerType,
+            tolerance: toleranceFor(row),
+          })
+        );
       });
+      // Defensive: any unattributed tail folds into the last row so it still
+      // counts toward the verdict rather than silently vanishing.
+      if (cursor < raw.length) {
+        const last = harnessRows[harnessRows.length - 1];
+        results.push(
+          ...buildPerTestResults(raw.slice(cursor), {
+            testId: last.id,
+            visibility: last.visibility,
+            checkerType: last.checkerType,
+            tolerance: toleranceFor(last),
+          })
+        );
+      }
       outcomes.push({ response, results, sentinelFound: true });
     }
   }
@@ -185,13 +222,13 @@ export async function runPracticeCode(
     orderBy: { order: "asc" },
   });
   if (sampleRows.length === 0) {
-    return serializeRunResult(null, [], "No sample tests configured yet.");
+    return serializeRunResult(null, [], "HARNESS", "No sample tests configured yet.");
   }
 
   const outcomes = await judge(language, code, sampleRows);
   const agg = aggregateVerdict(outcomes);
   const perTest = outcomes.flatMap((o) => o.results);
-  return serializeRunResult(agg, perTest);
+  return serializeRunResult(agg, perTest, deriveMode(sampleRows));
 }
 
 /** Submit: ALL tests, authoritative, immutable submission + per-test rows. */
@@ -290,5 +327,5 @@ export async function submitPracticeCode(
     return created;
   });
 
-  return serializeSubmissionResult(submission, perTest);
+  return serializeSubmissionResult(submission, perTest, deriveMode(rows));
 }

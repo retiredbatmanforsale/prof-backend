@@ -5,6 +5,14 @@
 
 import type { AggregateResult, PerTestResult } from "./executor.types.js";
 
+/**
+ * Test-authoring mode for the problem. The client uses it to decide how to present
+ * runtime/memory: CASE (deterministic / DSA) shows them prominently LeetCode-style;
+ * HARNESS (statistical/invariant ML) de-emphasizes them — they're dominated by the
+ * numpy import and not the learning signal.
+ */
+export type ProblemMode = "HARNESS" | "CASE" | "MIXED";
+
 interface SampleTestView {
   name: string;
   status: "PASS" | "FAIL" | "ERROR";
@@ -23,6 +31,7 @@ function sampleView(r: PerTestResult): SampleTestView {
 
 export interface RunResultView {
   verdict: string | null;
+  mode: ProblemMode;
   passedCount: number;
   totalCount: number;
   score: number;
@@ -35,10 +44,12 @@ export interface RunResultView {
 export function serializeRunResult(
   agg: AggregateResult | null,
   perTest: PerTestResult[],
+  mode: ProblemMode = "HARNESS",
   note?: string
 ): RunResultView {
   return {
     verdict: agg?.verdict ?? null,
+    mode,
     passedCount: agg?.passedCount ?? 0,
     totalCount: agg?.totalCount ?? 0,
     score: agg?.score ?? 0,
@@ -52,6 +63,7 @@ export function serializeRunResult(
 export interface SubmissionResultView {
   id: string;
   verdict: string;
+  mode: ProblemMode;
   passedCount: number;
   totalCount: number;
   score: number;
@@ -75,13 +87,15 @@ export function serializeSubmissionResult(
     language: string;
     createdAt: Date;
   },
-  perTest: PerTestResult[]
+  perTest: PerTestResult[],
+  mode: ProblemMode = "HARNESS"
 ): SubmissionResultView {
   const sample = perTest.filter((r) => r.visibility === "SAMPLE");
   const hidden = perTest.filter((r) => r.visibility === "HIDDEN");
   return {
     id: submission.id,
     verdict: submission.verdict,
+    mode,
     passedCount: submission.passedCount,
     totalCount: submission.totalCount,
     score: submission.score ?? 0,
