@@ -15,7 +15,7 @@ function resp(over: Partial<ExecuteResponse> = {}): ExecuteResponse {
   return {
     verdict: "ACCEPTED",
     runtimeMs: 10,
-    memoryKb: 1000,
+    memoryMb: 1000,
     exitCode: 0,
     signal: null,
     stdout: "",
@@ -115,13 +115,13 @@ describe("aggregateVerdict", () => {
 
   it("aggregates counts/runtime/memory across multiple executor calls", () => {
     const r = aggregateVerdict([
-      outcome([pt("PASS", "SAMPLE")], { runtimeMs: 5, memoryKb: 100 }),
-      outcome([pt("PASS"), pt("PASS")], { runtimeMs: 7, memoryKb: 400 }),
+      outcome([pt("PASS", "SAMPLE")], { runtimeMs: 5, memoryMb: 100 }),
+      outcome([pt("PASS"), pt("PASS")], { runtimeMs: 7, memoryMb: 400 }),
     ]);
     expect(r.verdict).toBe(CodeVerdict.ACCEPTED);
     expect(r.totalCount).toBe(3);
     expect(r.runtimeMs).toBe(12); // summed
-    expect(r.memoryKb).toBe(400); // max
+    expect(r.memoryMb).toBe(400); // max
   });
 });
 

@@ -14,6 +14,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { aggregateVerdict } from "./executor.mapper.js";
 import { assertCodeSize, judge, NoTestsError } from "./judge.js";
+import { deriveMode } from "./practice.service.js";
 import {
   serializeRunResult,
   serializeSubmissionResult,
@@ -32,11 +33,11 @@ export async function runAssessmentCode(
     orderBy: { order: "asc" },
   });
   if (sampleRows.length === 0) {
-    return serializeRunResult(null, [], "No sample tests configured yet.");
+    return serializeRunResult(null, [], "HARNESS", "No sample tests configured yet.");
   }
   const outcomes = await judge(args.language, args.code, sampleRows);
   const agg = aggregateVerdict(outcomes);
-  return serializeRunResult(agg, outcomes.flatMap((o) => o.results));
+  return serializeRunResult(agg, outcomes.flatMap((o) => o.results), deriveMode(sampleRows));
 }
 
 /**
@@ -118,5 +119,5 @@ export async function submitAssessmentCode(
     return created;
   });
 
-  return serializeSubmissionResult(submission, perTest);
+  return serializeSubmissionResult(submission, perTest, deriveMode(rows));
 }

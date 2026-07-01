@@ -10,18 +10,26 @@
 // and the combined-harness optimization) lives in the SHARED judge — src/lib/judge.ts
 // — reused verbatim by the assessment service.
 
-import { Prisma, type PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient, type ProblemTest } from "@prisma/client";
 import { aggregateVerdict } from "./executor.mapper.js";
 import { assertCodeSize, judge, NoTestsError } from "./judge.js";
 import {
   serializeRunResult,
   serializeSubmissionResult,
+  type ProblemMode,
   type RunResultView,
   type SubmissionResultView,
 } from "./practice.serializer.js";
 
 // Re-exported for the route layer (practice/code.ts); single source is judge.ts.
 export { NoTestsError, MAX_CODE_BYTES } from "./judge.js";
+
+/** HARNESS | CASE | MIXED — drives mode-aware perf display on the client (PR #34). */
+export function deriveMode(rows: Pick<ProblemTest, "kind">[]): ProblemMode {
+  const hasHarness = rows.some((r) => r.kind === "HARNESS");
+  const hasCase = rows.some((r) => r.kind === "CASE");
+  return hasHarness && hasCase ? "MIXED" : hasCase ? "CASE" : "HARNESS";
+}
 
 export async function savePracticeDraft(
   prisma: PrismaClient,
@@ -76,13 +84,13 @@ export async function runPracticeCode(
     orderBy: { order: "asc" },
   });
   if (sampleRows.length === 0) {
-    return serializeRunResult(null, [], "No sample tests configured yet.");
+    return serializeRunResult(null, [], "HARNESS", "No sample tests configured yet.");
   }
 
   const outcomes = await judge(language, code, sampleRows);
   const agg = aggregateVerdict(outcomes);
   const perTest = outcomes.flatMap((o) => o.results);
-  return serializeRunResult(agg, perTest);
+  return serializeRunResult(agg, perTest, deriveMode(sampleRows));
 }
 
 /** Submit: ALL tests, authoritative, immutable submission + per-test rows. */
@@ -182,5 +190,5 @@ export async function submitPracticeCode(
     return created;
   });
 
-  return serializeSubmissionResult(submission, perTest);
+  return serializeSubmissionResult(submission, perTest, deriveMode(rows));
 }
