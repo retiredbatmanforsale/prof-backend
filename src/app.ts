@@ -1,4 +1,5 @@
 import Fastify, { type FastifyError } from "fastify";
+import { Prisma } from "@prisma/client";
 import helmetPlugin from "@fastify/helmet";
 import { Sentry } from "./lib/sentry.js";
 import corsPlugin from "./plugins/cors.js";
@@ -21,6 +22,48 @@ import studentAssessmentRoutes from "./routes/assessments/index.js";
 import rankingRoutes from "./routes/ranking/index.js";
 import lessonRoutes from "./routes/lessons/index.js";
 import streakRoutes from "./routes/streak/index.js";
+
+/**
+ * Map a Prisma error to a SAFE, user-facing response. Returns null for
+ * non-Prisma errors (handled by the default branch). The client never sees the
+ * Prisma class name, SQL, column names, or `meta` — those are logged server-side.
+ *
+ * P2021 (table missing) / P2022 (column missing) are the schema-drift codes we
+ * hit when code is deployed ahead of `prisma migrate deploy`; we surface them as
+ * a transient 503 so users get a "retry / temporarily unavailable" message.
+ */
+function sanitizePrismaError(
+  error: unknown
+): { status: number; error: string; message: string } | null {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    switch (error.code) {
+      case "P2021": // table does not exist
+      case "P2022": // column does not exist
+      case "P2010": // raw query failed
+        return { status: 503, error: "ServiceUnavailable", message: "This feature is temporarily unavailable. Please try again shortly." };
+      case "P2002": // unique constraint
+        return { status: 409, error: "Conflict", message: "This record already exists." };
+      case "P2003": // foreign key constraint
+        return { status: 409, error: "Conflict", message: "This action conflicts with related data." };
+      case "P2025": // record not found
+        return { status: 404, error: "NotFound", message: "The requested record was not found." };
+      default:
+        return { status: 503, error: "DatabaseError", message: "The database is temporarily unavailable. Please retry." };
+    }
+  }
+  if (
+    error instanceof Prisma.PrismaClientInitializationError ||
+    error instanceof Prisma.PrismaClientRustPanicError
+  ) {
+    return { status: 503, error: "ServiceUnavailable", message: "The database is temporarily unavailable. Please retry." };
+  }
+  if (error instanceof Prisma.PrismaClientValidationError) {
+    // A shape/type mismatch (often itself a symptom of schema drift). Do NOT
+    // echo the validation text — it contains model/field internals.
+    return { status: 400, error: "BadRequest", message: "The request could not be processed. Please contact an administrator if this persists." };
+  }
+  return null;
+}
 
 export async function buildApp() {
   const app = Fastify({
@@ -110,10 +153,28 @@ export async function buildApp() {
         Sentry.captureException(error);
       });
     }
+    // Full internals (stack, prisma code/meta) go to the server log ONLY —
+    // never to the client. `request.log.error(error)` serializes the stack.
     request.log.error(error);
+
+    // Prisma failures must never surface their class name / SQL to end users
+    // (e.g. "PrismaClientKnownRequestError"). Map them to safe messages and log
+    // the code/meta server-side for on-call triage.
+    const safe = sanitizePrismaError(error);
+    if (safe) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError) {
+        request.log.error(
+          { event: "prisma_error", prismaCode: error.code, prismaMeta: error.meta, path: request.url, method: request.method },
+          "prisma_known_request_error"
+        );
+      }
+      return reply.status(safe.status).send({ error: safe.error, message: safe.message });
+    }
+
     const statusCode = error.statusCode ?? 500;
     reply.status(statusCode).send({
-      error: error.name || "InternalServerError",
+      // Never leak internal error class names on 5xx.
+      error: statusCode >= 500 ? "InternalServerError" : (error.name || "Error"),
       message: statusCode >= 500 ? "Internal server error" : error.message,
     });
   });
