@@ -6,167 +6,29 @@
 //                        updates the PracticeAttempt summary.
 //   savePracticeDraft / getPracticeDraft — the mutable latest-code draft.
 //
-// Source-of-truth rules: the executor is compute-only; the backend builds the
-// program, parses per-test output, computes the verdict, and persists. Hidden
-// tests are fetched here and sent ONLY to the executor — never to the client
-// (see practice.serializer.ts).
+// Judging (build program → executor → parse → verdict, with hidden-test redaction
+// and the combined-harness optimization) lives in the SHARED judge — src/lib/judge.ts
+// — reused verbatim by the assessment service.
 
 import { Prisma, type PrismaClient, type ProblemTest } from "@prisma/client";
-import { execute } from "./executor.client.js";
-import {
-  buildCaseProgram,
-  buildCombinedHarnessProgram,
-  DEFAULT_ATOL,
-  DEFAULT_RTOL,
-  parseResults,
-} from "./executor.harness.js";
-import { aggregateVerdict, buildPerTestResults } from "./executor.mapper.js";
+import { aggregateVerdict } from "./executor.mapper.js";
+import { assertCodeSize, judge, NoTestsError } from "./judge.js";
 import {
   serializeRunResult,
   serializeSubmissionResult,
+  type ProblemMode,
   type RunResultView,
   type SubmissionResultView,
 } from "./practice.serializer.js";
-import type {
-  ExecOutcome,
-  PerTestResult,
-  TestSpec,
-} from "./executor.types.js";
 
-export const MAX_CODE_BYTES = 256 * 1024;
+// Re-exported for the route layer (practice/code.ts); single source is judge.ts.
+export { NoTestsError, MAX_CODE_BYTES } from "./judge.js";
 
-/** Thrown when a problem has no configured tests — the route maps it to 422. */
-export class NoTestsError extends Error {
-  constructor(public readonly problemSlug: string) {
-    super(`No tests configured for problem "${problemSlug}"`);
-    this.name = "NoTestsError";
-  }
-}
-
-function assertCodeSize(code: string): void {
-  if (Buffer.byteLength(code, "utf8") > MAX_CODE_BYTES) {
-    const err = new Error("code exceeds 256 KB limit");
-    err.name = "CodeTooLargeError";
-    throw err;
-  }
-}
-
-function toleranceFor(row: ProblemTest): { rtol: number; atol: number } | null {
-  if (row.checkerType !== "ALL_CLOSE") return null;
-  return { rtol: row.rtol ?? DEFAULT_RTOL, atol: row.atol ?? DEFAULT_ATOL };
-}
-
-function toSpec(row: ProblemTest): TestSpec {
-  return {
-    id: row.id,
-    name: row.id,
-    visibility: row.visibility,
-    kind: row.kind,
-    ioMode: row.ioMode,
-    checkerType: row.checkerType,
-    language: row.language,
-    input: row.input,
-    expectedOutput: row.expectedOutput,
-    rtol: row.rtol,
-    atol: row.atol,
-    harness: row.harness,
-    weight: row.weight,
-  };
-}
-
-/** "HARNESS" | "CASE" | "MIXED" — drives mode-aware perf display on the client. */
-export type ProblemMode = "HARNESS" | "CASE" | "MIXED";
-
+/** HARNESS | CASE | MIXED — drives mode-aware perf display on the client (PR #34). */
 export function deriveMode(rows: Pick<ProblemTest, "kind">[]): ProblemMode {
   const hasHarness = rows.some((r) => r.kind === "HARNESS");
   const hasCase = rows.some((r) => r.kind === "CASE");
-  if (hasHarness && hasCase) return "MIXED";
-  return hasCase ? "CASE" : "HARNESS";
-}
-
-/**
- * Run the user's code against the given test rows on the executor. ALL HARNESS
- * rows of the problem (e.g. SAMPLE + HIDDEN) are combined into ONE program/process
- * so numpy is imported once — roughly halving wall time versus one execute per row
- * — and CASE rows run as one batched call. Results are attributed back to each
- * row's visibility/checkerType (HARNESS: by block position; CASE: by id) so the
- * verdict + hidden-test redaction stay correct.
- */
-async function judge(
-  language: string,
-  userCode: string,
-  rows: ProblemTest[]
-): Promise<ExecOutcome[]> {
-  const outcomes: ExecOutcome[] = [];
-  const harnessRows = rows.filter((r) => r.kind === "HARNESS" && r.harness);
-  const caseRows = rows.filter((r) => r.kind === "CASE");
-
-  if (harnessRows.length > 0) {
-    const { program, counts } = buildCombinedHarnessProgram(
-      language,
-      userCode,
-      harnessRows.map((r) => r.harness as string)
-    );
-    const response = await execute({ language, code: program });
-    const raw = parseResults(response.stdout);
-    if (raw === null) {
-      outcomes.push({ response, results: [], sentinelFound: false });
-    } else {
-      // Attribute the flat result list back to each row by block position.
-      const results: PerTestResult[] = [];
-      let cursor = 0;
-      harnessRows.forEach((row, idx) => {
-        const slice = raw.slice(cursor, cursor + counts[idx]);
-        cursor += counts[idx];
-        results.push(
-          ...buildPerTestResults(slice, {
-            testId: row.id,
-            visibility: row.visibility,
-            checkerType: row.checkerType,
-            tolerance: toleranceFor(row),
-          })
-        );
-      });
-      // Defensive: any unattributed tail folds into the last row so it still
-      // counts toward the verdict rather than silently vanishing.
-      if (cursor < raw.length) {
-        const last = harnessRows[harnessRows.length - 1];
-        results.push(
-          ...buildPerTestResults(raw.slice(cursor), {
-            testId: last.id,
-            visibility: last.visibility,
-            checkerType: last.checkerType,
-            tolerance: toleranceFor(last),
-          })
-        );
-      }
-      outcomes.push({ response, results, sentinelFound: true });
-    }
-  }
-
-  if (caseRows.length > 0) {
-    const program = buildCaseProgram(language, userCode, caseRows.map(toSpec));
-    const response = await execute({ language, code: program });
-    const raw = parseResults(response.stdout);
-    if (raw === null) {
-      outcomes.push({ response, results: [], sentinelFound: false });
-    } else {
-      const byId = new Map(caseRows.map((r) => [r.id, r]));
-      const results: PerTestResult[] = raw.flatMap((r) => {
-        const row = byId.get(r.name);
-        if (!row) return [];
-        return buildPerTestResults([r], {
-          testId: row.id,
-          visibility: row.visibility,
-          checkerType: row.checkerType,
-          tolerance: toleranceFor(row),
-        });
-      });
-      outcomes.push({ response, results, sentinelFound: true });
-    }
-  }
-
-  return outcomes;
+  return hasHarness && hasCase ? "MIXED" : hasCase ? "CASE" : "HARNESS";
 }
 
 export async function savePracticeDraft(
@@ -271,7 +133,8 @@ export async function submitPracticeCode(
         totalCount: agg.totalCount,
         score: agg.score,
         runtimeMs: agg.runtimeMs ?? undefined,
-        memoryKb: agg.memoryKb ?? undefined,
+        // agg.memoryMb is MB; DB column `memoryKb` (Int) stores rounded MB (see memory-unit fix).
+        memoryKb: agg.memoryMb != null ? Math.round(agg.memoryMb) : undefined,
       },
     });
 

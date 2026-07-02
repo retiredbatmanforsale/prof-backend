@@ -120,6 +120,36 @@ export const attemptStateSchema = z.object({
   draftCode: z.record(z.string()).optional(),
 });
 
+// ─── Assessment coding (Phase 2) ──────────────────────────────
+// Run / Submit a CATALOG coding question inside an attempt. 256 KB code cap mirrors
+// the CodeSubmission/judge cap. `fingerprint` is an optional anti-cheat device hash.
+const MAX_CODE = 256 * 1024;
+
+export const assessmentCodeParamsSchema = z.object({
+  id: z.string().min(1),
+  qid: z.string().min(1),
+});
+
+export const assessmentRunCodeSchema = z.object({
+  language: z.string().min(1),
+  code: z.string().min(1).max(MAX_CODE),
+  fingerprint: z.string().max(512).optional(),
+});
+
+export const assessmentSubmitCodeSchema = assessmentRunCodeSchema;
+
+// Integrity (proctoring) event reported by the client. Only client-sendable
+// signal types are accepted; WARNING_ISSUED / AUTO_SUBMIT / RESUME are server-only.
+export const assessmentIntegritySchema = z.object({
+  type: z.enum([
+    "TAB_SWITCH", "FOCUS_LOSS", "COPY_ATTEMPT", "PASTE_ATTEMPT",
+    "CUT_ATTEMPT", "CONTEXT_MENU", "FULLSCREEN_EXIT", "FULLSCREEN_ENTER",
+  ]),
+  questionId: z.string().optional(),
+  clientTs: z.string().optional(),
+  meta: z.record(z.unknown()).optional(),
+});
+
 export type AttemptStateInput = z.infer<typeof attemptStateSchema>;
 export type QuestionInput = z.infer<typeof questionInputSchema>;
 export type CreateAssessmentInput = z.infer<typeof createAssessmentSchema>;
