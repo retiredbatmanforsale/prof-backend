@@ -144,6 +144,7 @@ export const assessmentIntegritySchema = z.object({
   type: z.enum([
     "TAB_SWITCH", "FOCUS_LOSS", "COPY_ATTEMPT", "PASTE_ATTEMPT",
     "CUT_ATTEMPT", "CONTEXT_MENU", "FULLSCREEN_EXIT", "FULLSCREEN_ENTER",
+    "HIDDEN_TIMEOUT", "DRAG_DROP",
   ]),
   questionId: z.string().optional(),
   clientTs: z.string().optional(),

@@ -2,16 +2,19 @@
 // warning budget and termination — the client only reports raw signals.
 //
 // Warnable (consume the budget): TAB_SWITCH, COPY_ATTEMPT, PASTE_ATTEMPT.
-// Hard terminate (no warning, immediate): FULLSCREEN_EXIT.
-// Everything else (FOCUS_LOSS, CUT_ATTEMPT, CONTEXT_MENU, FULLSCREEN_ENTER) is
-// logged only. A tab-switch fires twice in browsers (blur + visibilitychange);
-// the second tab-group event within DEDUPE_MS is recorded but NOT counted.
+// Hard terminate (no warning, immediate): FULLSCREEN_EXIT, HIDDEN_TIMEOUT.
+// Everything else (FOCUS_LOSS, CUT_ATTEMPT, CONTEXT_MENU, DRAG_DROP,
+// FULLSCREEN_ENTER) is logged only. A tab-switch fires twice in browsers (blur +
+// visibilitychange); the second tab-group event within DEDUPE_MS is recorded but
+// NOT counted.
 
 import { Prisma, type PrismaClient, type IntegrityEventType } from "@prisma/client";
 import { autoFinalizeAttempt } from "./attemptLifecycle.js";
 import type { autoGrade } from "./grading.js";
 
 const WARNABLE = new Set<IntegrityEventType>(["TAB_SWITCH", "COPY_ATTEMPT", "PASTE_ATTEMPT"]);
+// Immediate hard-terminate (no warning): leaving fullscreen, or tab hidden past the threshold.
+const HARD_TERMINATE = new Set<IntegrityEventType>(["FULLSCREEN_EXIT", "HIDDEN_TIMEOUT"]);
 const TAB_GROUP = new Set<IntegrityEventType>(["TAB_SWITCH", "FOCUS_LOSS"]);
 const DEDUPE_MS = 1500;
 
@@ -95,13 +98,13 @@ export async function recordIntegrityEvent(
     },
   });
 
-  // 2. FULLSCREEN_EXIT → hard terminate (no warning increment)
-  if (type === "FULLSCREEN_EXIT") {
+  // 2. Hard-terminate signals (FULLSCREEN_EXIT, HIDDEN_TIMEOUT) → immediate auto-submit, no warning.
+  if (HARD_TERMINATE.has(type)) {
     await prisma.assessmentIntegrity.update({
       where: { attemptId: attempt.id },
-      data: { ...counter, terminated: true, terminatedReason: "FULLSCREEN_EXIT", terminatedAt: now, lastEventAt: now },
+      data: { ...counter, terminated: true, terminatedReason: type, terminatedAt: now, lastEventAt: now },
     });
-    await prisma.assessmentEvent.create({ data: { attemptId: attempt.id, assessmentId: assessment.id, userId: attempt.userId, type: "AUTO_SUBMIT", warnable: false, meta: { reason: "FULLSCREEN_EXIT" } } });
+    await prisma.assessmentEvent.create({ data: { attemptId: attempt.id, assessmentId: assessment.id, userId: attempt.userId, type: "AUTO_SUBMIT", warnable: false, meta: { reason: type } } });
     await autoFinalizeAttempt(prisma, assessment, attempt);
     return { warningsIssued: integ.warningsIssued, remaining: 0, terminated: true, action: "AUTO_SUBMITTED" };
   }

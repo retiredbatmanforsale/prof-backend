@@ -509,6 +509,9 @@ enum IntegrityEventType {
   AUTO_SUBMIT
   FOCUS_LOSS
   RESUME
+  // Strict enforcement v1.
+  HIDDEN_TIMEOUT // tab hidden past the threshold → immediate auto-submit
+  DRAG_DROP // blocked drag/drop gesture (logged)
 }
 
 // Append-only audit trail: one row per integrity signal. Server `createdAt` is the
